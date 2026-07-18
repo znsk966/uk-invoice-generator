@@ -2,7 +2,6 @@
 name = "uk-invoice-generator-backend"
 version = "0.0.0"
 description = "Backend for uk-invoice-generator (Phase 0 scaffold)"
-readme = "../README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
