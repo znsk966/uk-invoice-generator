@@ -29,10 +29,14 @@ Local development targets **Windows with PostgreSQL running on the host** at
 - Node.js 20+
 - PostgreSQL 17 running locally
 
-### 1. Create the database
+### 1. Create the database and app user
+
+Connect as a superuser and create a dedicated role and database:
 
 ```powershell
-createdb -U postgres -h localhost uk_invoice_dev
+psql -U postgres -h localhost -c "CREATE ROLE uk_invoice_user WITH LOGIN PASSWORD 'CHANGE_ME';"
+psql -U postgres -h localhost -c "CREATE DATABASE uk_invoice_db OWNER uk_invoice_user;"
+psql -U postgres -h localhost -d uk_invoice_db -c "ALTER SCHEMA public OWNER TO uk_invoice_user;"
 ```
 
 ### 2. Configure the backend
