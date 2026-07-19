@@ -1,6 +1,6 @@
 # UK Invoice Generator — Phase Plan (PoC)
 
-**Repo:** public from Day 1 · open source (MIT recommended — confirm)
+**Repo:** public from Day 1 · open source (MIT — see [LICENSE](../LICENSE))
 **Stack:** PostgreSQL · Python FastAPI (SQLAlchemy 2 + Alembic + Pydantic v2) · React + Vite + TypeScript + Tailwind CSS v4
 **Dev environment:** Windows, host PostgreSQL on `localhost:5432`, no Docker locally
 **CI:** GitHub Actions with Dockerized PostgreSQL service container — CI is authoritative for anything that can't run on Windows (e.g. WeasyPrint/GTK)
@@ -22,7 +22,42 @@ Carried over from mk-erp — these rules exist because they prevent real bugs:
 
 ---
 
-## Phase 0 — Scaffold & Open Source Hygiene  *(PROMPT-01)*
+## Status
+
+| Phase | Prompt | State | PR |
+| --- | --- | --- | --- |
+| 0 — Scaffold & OSS hygiene | PROMPT-01 | **Done** | [#1](https://github.com/znsk966/uk-invoice-generator/pull/1) |
+| 1 — Domain & database | PROMPT-02 | **Done** | [#2](https://github.com/znsk966/uk-invoice-generator/pull/2) |
+| 2 — API | PROMPT-03 | **Done** | [#3](https://github.com/znsk966/uk-invoice-generator/pull/3) |
+| 3 — Frontend | PROMPT-04 | Not started (scaffold only) | — |
+| 4 — PDF & polish | PROMPT-05 | Not started | — |
+
+### Reviewed deviations from the original plan
+
+Things the phases did differently from this document, each accepted in review:
+
+- **Dedicated database role.** Phase 0 planned to run against a default local
+  superuser; the implementation uses a dedicated `uk_invoice_user` owning
+  `uk_invoice_db`, with a separate throwaway `uk_invoice_test` for tests.
+- **Committing test sessions for the API tier.** The plan assumed one
+  rollback-based isolation strategy. The API tier needs real commits — row locks
+  and triggers do not behave meaningfully inside a single rolled-back
+  transaction — so it isolates by `TRUNCATE` + reseed instead. See
+  [TESTING.md](TESTING.md).
+- **Trigger scope extended in review.** The immutability triggers originally
+  covered `UPDATE` on `invoice` and `invoice_line`. Review demonstrated two
+  bypasses with raw SQL, so `INSERT` on `invoice_line` and `DELETE` on `invoice`
+  are now guarded too.
+- **Float guard at the model boundary.** Not in the original plan. Added in
+  Phase 1 after review showed `InvoiceLine(unit_price=0.1)` was silently
+  accepted: `reject_float` is now wired via `@validates` on every money,
+  quantity, and rate column.
+- **Third enforcement point for money-as-strings.** Snapshots store all money as
+  JSON strings, asserted at the database level with `jsonb_typeof`.
+
+---
+
+## Phase 0 — Scaffold & Open Source Hygiene  *(PROMPT-01)* — **done**
 
 - Monorepo: `backend/` (FastAPI, health endpoint, Alembic wired, pytest, ruff) + `frontend/` (Vite + React + TS + Tailwind, placeholder page, eslint, `tsc --noEmit`)
 - `prompts/` folder, `CLAUDE.md` with Project Law, `.env.example` for host Postgres
@@ -31,7 +66,7 @@ Carried over from mk-erp — these rules exist because they prevent real bugs:
 
 **Done when:** `uvicorn` serves `/health`, Vite dev page loads, CI green on PR #1.
 
-## Phase 1 — Domain & Database  *(PROMPT-02)*
+## Phase 1 — Domain & Database  *(PROMPT-02)* — **done**
 
 - SQLAlchemy models + Alembic migrations: `company_profile` (seller: name, address, VAT reg no, bank details), `client`, `vat_rate` (effective-dated), `invoice`, `invoice_line`
 - Shared money core: `money.py` (Decimal helpers), `vat.py` (per-rate-group engine), `numbering.py` (gapless allocator)
@@ -39,7 +74,7 @@ Carried over from mk-erp — these rules exist because they prevent real bugs:
 
 **Done when:** migrations run clean on empty DB; money/VAT/numbering tests pass with documented edge cases.
 
-## Phase 2 — API  *(PROMPT-03)*
+## Phase 2 — API  *(PROMPT-03)* — **done**
 
 - CRUD: clients (archive semantics), company profile, invoice drafts with lines
 - Draft lifecycle: create → edit → **issue** (number allocation + snapshot + immutability enforced at DB and API level) → void
@@ -48,7 +83,7 @@ Carried over from mk-erp — these rules exist because they prevent real bugs:
 
 **Done when:** full invoice lifecycle works via OpenAPI docs UI; immutability tests pass.
 
-## Phase 3 — Frontend  *(PROMPT-04)*
+## Phase 3 — Frontend  *(PROMPT-04)* — **not started**
 
 - Client list + form (archive, not delete)
 - Invoice editor: line items, VAT rate picker, totals rendered from server response (debounced compute call)
@@ -57,7 +92,7 @@ Carried over from mk-erp — these rules exist because they prevent real bugs:
 
 **Done when:** a person can create a client, build an invoice, issue it, and see it locked — all through the UI.
 
-## Phase 4 — PDF & Polish  *(PROMPT-05)*
+## Phase 4 — PDF & Polish  *(PROMPT-05)* — **not started**
 
 - WeasyPrint invoice PDF meeting UK legal content requirements: unique sequential number, invoice date + tax point, seller name/address/VAT number, client details, per-line description/qty/unit price, per-rate VAT breakdown, totals ex-VAT / VAT / gross
 - Download from UI; PDF rendered from the immutable snapshot, never live data
