@@ -28,6 +28,9 @@ jobs:
 
     env:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/uk_invoice_test
+      # DB tests run against the same throwaway service database. When unset
+      # (e.g. locally without a database) those tests skip instead of failing.
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/uk_invoice_test
 
     defaults:
       run:
@@ -51,6 +54,13 @@ jobs:
 
       - name: Ruff format check
         run: ruff format --check .
+
+      - name: Alembic migrations round-trip
+        # Prove the schema + seed migrations apply and revert cleanly on an
+        # empty database, then leave it empty for the test tier below.
+        run: |
+          alembic upgrade head
+          alembic downgrade base
 
       - name: Pytest
         run: pytest

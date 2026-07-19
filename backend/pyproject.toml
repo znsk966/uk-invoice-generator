@@ -16,6 +16,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    # anyio's pytest plugin backs @pytest.mark.anyio. It currently arrives
+    # transitively via httpx/starlette; pin it explicitly so a dependency
+    # shuffle can never silently break async test collection.
+    "anyio",
     "httpx",
     "ruff",
 ]

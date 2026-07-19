@@ -93,6 +93,40 @@ npx tsc --noEmit
 npm run build
 ```
 
+## Testing
+
+The backend test suite has two tiers:
+
+- **Unit tests** (money, VAT, numbering formatting) need no database and always
+  run.
+- **DB tests** (VAT rate effective-dating, gapless numbering, concurrency) run
+  only when `TEST_DATABASE_URL` is set. If it is unset they **skip** — the suite
+  never creates or drops tables against your real `DATABASE_URL`.
+
+Create a throwaway test database once (from an admin/superuser account), owned by
+the app user so the app credentials can connect:
+
+```powershell
+# Adjust the owner/role to match your local setup.
+createdb -U postgres -O uk_invoice_user uk_invoice_test
+```
+
+Then run the full suite (unit + DB) by pointing `TEST_DATABASE_URL` at it. The
+schema is created from the models at session start and dropped at the end, with
+each test rolled back:
+
+```powershell
+cd backend
+$env:TEST_DATABASE_URL = "postgresql+psycopg://uk_invoice_user:CHANGE_ME@localhost:5432/uk_invoice_test"
+pytest
+```
+
+To run only the unit tier, leave `TEST_DATABASE_URL` unset (`pytest` — the DB
+tests report as skipped).
+
+CI runs both tiers against a disposable `uk_invoice_test` PostgreSQL 17 service,
+and additionally applies and reverts the Alembic migrations on an empty database.
+
 ## Phase plan
 
 The full plan lives in [`docs/PHASE-PLAN.md`](docs/PHASE-PLAN.md).
