@@ -49,6 +49,25 @@ CREATE TRIGGER trg_invoice_immutable
     FOR EACH ROW EXECUTE FUNCTION guard_invoice_immutable();
 
 
+-- A non-draft invoice can never be deleted. Drafts are scratch paper and remain
+-- deletable (their lines cascade while the draft still exists).
+CREATE OR REPLACE FUNCTION guard_invoice_no_delete()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.status <> 'draft' THEN
+        RAISE EXCEPTION
+            'invoice % cannot be deleted (status=%): only drafts are deletable',
+            OLD.id, OLD.status;
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_invoice_no_delete
+    BEFORE DELETE ON invoice
+    FOR EACH ROW EXECUTE FUNCTION guard_invoice_no_delete();
+
+
 CREATE OR REPLACE FUNCTION guard_invoice_line_immutable()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -73,14 +92,18 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- INSERT is covered too: a line may not be added to a non-draft invoice. The
+-- function's COALESCE(NEW, OLD) already handles the INSERT case (OLD is null).
 CREATE TRIGGER trg_invoice_line_immutable
-    BEFORE UPDATE OR DELETE ON invoice_line
+    BEFORE INSERT OR UPDATE OR DELETE ON invoice_line
     FOR EACH ROW EXECUTE FUNCTION guard_invoice_line_immutable();
 """
 
 IMMUTABILITY_DOWN_SQL = """
 DROP TRIGGER IF EXISTS trg_invoice_line_immutable ON invoice_line;
 DROP FUNCTION IF EXISTS guard_invoice_line_immutable();
+DROP TRIGGER IF EXISTS trg_invoice_no_delete ON invoice;
+DROP FUNCTION IF EXISTS guard_invoice_no_delete();
 DROP TRIGGER IF EXISTS trg_invoice_immutable ON invoice;
 DROP FUNCTION IF EXISTS guard_invoice_immutable();
 """

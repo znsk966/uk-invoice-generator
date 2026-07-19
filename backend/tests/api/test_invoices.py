@@ -146,6 +146,31 @@ def test_immutability_trigger_fires_on_direct_line_update(client, db_engine_for_
     assert "immutable" in str(excinfo.value).lower()
 
 
+def test_immutability_trigger_blocks_insert_into_issued_lines(client, db_engine_for_test):
+    """A raw INSERT of a new line onto an issued invoice must be rejected."""
+    issued = _issue_one(client)
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - DB driver error type
+        with db_engine_for_test.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO invoice_line "
+                    "(invoice_id, position, description, quantity, unit_price, vat_rate_code) "
+                    "VALUES (:id, 99, 'injected', 1, 1, 'standard')"
+                ),
+                {"id": issued["id"]},
+            )
+    assert "immutable" in str(excinfo.value).lower()
+
+
+def test_immutability_trigger_blocks_delete_of_issued_invoice(client, db_engine_for_test):
+    """A raw DELETE of an issued invoice must be rejected (only drafts delete)."""
+    issued = _issue_one(client)
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - DB driver error type
+        with db_engine_for_test.begin() as conn:
+            conn.execute(text("DELETE FROM invoice WHERE id = :id"), {"id": issued["id"]})
+    assert "cannot be deleted" in str(excinfo.value).lower()
+
+
 # --------------------------------------------------------------------------- #
 # Gapless numbering
 # --------------------------------------------------------------------------- #
