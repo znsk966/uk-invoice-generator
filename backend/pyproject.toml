@@ -38,6 +38,24 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom puts calls (Depends/Query/Path/Body) in
+# argument defaults on purpose; they are not the mutable-default trap B008 warns
+# about.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+    # Starlette's TestClient warns that httpx is deprecated in favour of httpx2;
+    # nothing we can act on until Starlette migrates. Silence to keep output clean.
+    # Message-only match (its category is StarletteDeprecationWarning, not the
+    # stdlib DeprecationWarning).
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
