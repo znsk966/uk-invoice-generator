@@ -23,10 +23,11 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.core.db import Base
 from app.core.mixins import TimestampMixin
+from app.core.money import reject_float
 from app.core.vat import VatRateCode
 from app.modules.vat.models import vat_rate_code_enum
 
@@ -115,3 +116,9 @@ class InvoiceLine(Base):
     vat_rate_code: Mapped[VatRateCode] = mapped_column(vat_rate_code_enum, nullable=False)
 
     invoice: Mapped["Invoice"] = relationship(back_populates="lines")
+
+    @validates("quantity", "unit_price")
+    def _reject_float(self, key: str, value: object) -> object:
+        # Floats must never touch money — reject at the model boundary, not just
+        # downstream in round_money.
+        return reject_float(key, value)

@@ -25,6 +25,11 @@ def allocate_number(session: Session, key: str) -> int:
     the increment too — so a rolled-back issue never burns a number, and the
     next issue reuses it. The row-level lock serialises concurrent allocators on
     the same key, guaranteeing no duplicate and no gap.
+
+    Postgres-only by design: the create-if-missing step uses ``INSERT ... ON
+    CONFLICT DO NOTHING``. Do not "portablise" this into a plain SELECT-then-
+    INSERT, which would reintroduce the create race this deliberately closes.
+    The whole project targets PostgreSQL only.
     """
     # Ensure the row exists without racing concurrent creators: an idempotent
     # upsert that does nothing if another transaction already created it.

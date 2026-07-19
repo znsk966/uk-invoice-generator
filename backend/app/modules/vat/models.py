@@ -8,9 +8,10 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import Date, Enum, Numeric, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.core.db import Base
+from app.core.money import reject_float
 from app.core.vat import VatRateCode
 
 # A single shared Enum type object (Postgres type ``vat_rate_code``), reused by
@@ -39,3 +40,8 @@ class VatRate(Base):
     rate: Mapped[Decimal] = mapped_column(Numeric(5, 4, asdecimal=True), nullable=False)
     valid_from: Mapped[date] = mapped_column(Date, nullable=False)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    @validates("rate")
+    def _reject_float(self, key: str, value: object) -> object:
+        # A rate is money-adjacent reference data — floats must never touch it.
+        return reject_float(key, value)

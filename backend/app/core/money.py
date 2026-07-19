@@ -39,6 +39,26 @@ def round_money(value: Decimal) -> Decimal:
     return value.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
+def reject_float(field: str, value: object) -> object:
+    """Guard a money/quantity/rate column value: reject ``float`` (and ``bool``)
+    loudly, returning the value unchanged otherwise.
+
+    Intended for SQLAlchemy ``@validates`` hooks so a stray float literal cannot
+    be assigned to a money column at the model boundary — the same "floats never
+    touch money" contract that ``round_money`` / ``as_decimal`` enforce, applied
+    one layer earlier. Non-float values (Decimal, int, str, None) pass through
+    untouched; SQLAlchemy still coerces them to the column's Numeric type.
+    """
+    if isinstance(value, bool):
+        raise TypeError(f"{field} must not be a bool")
+    if isinstance(value, float):
+        raise TypeError(
+            f"{field} must not be a float — floats must never touch money; "
+            "pass a Decimal (or str/int) instead"
+        )
+    return value
+
+
 def as_decimal(value: str | int | Decimal) -> Decimal:
     """Safely construct a Decimal from a str, int, or Decimal.
 
