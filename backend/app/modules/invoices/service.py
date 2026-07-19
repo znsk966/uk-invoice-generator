@@ -68,6 +68,13 @@ _COMPANY_SINGLETON_ID = 1
 # Lookups
 # --------------------------------------------------------------------------- #
 def get_invoice_or_404(session: Session, invoice_id: int, *, for_update: bool = False) -> Invoice:
+    """Load an invoice or raise 404.
+
+    ``for_update=True`` takes a row lock (``SELECT ... FOR UPDATE``) for the rest
+    of the request's transaction. The state transitions use it so two concurrent
+    issues (or voids) of the same invoice serialise: the second waits, then sees
+    the status the first left behind and is rejected.
+    """
     if for_update:
         invoice = session.execute(
             select(Invoice).where(Invoice.id == invoice_id).with_for_update()
@@ -80,6 +87,8 @@ def get_invoice_or_404(session: Session, invoice_id: int, *, for_update: bool = 
 
 
 def _require_client(session: Session, client_id: int) -> Client:
+    """Load a client or raise 404. Archived clients pass — issued invoices must
+    stay readable after their client is archived."""
     client = session.get(Client, client_id)
     if client is None:
         raise AppError(404, NOT_FOUND, f"Client {client_id} not found.")
@@ -167,6 +176,15 @@ def delete_draft(session: Session, invoice_id: int) -> None:
 # Totals (drafts, on demand — never persisted)
 # --------------------------------------------------------------------------- #
 def compute_invoice_totals(session: Session, invoice: Invoice, on_date: date) -> InvoiceTotals:
+    """Compute an invoice's totals from its current lines, at ``on_date``'s rates.
+
+    Persists nothing — this is the on-demand view a draft's editor asks for.
+    Issued invoices never come through here: their money was written into the
+    snapshot at issue and is served from it verbatim, never recomputed.
+
+    Propagates :class:`LookupError` from ``rates_on`` when a rate is missing for
+    the date; callers decide how to surface it.
+    """
     rates = rates_on(session, on_date)
     lines = [
         LineInput(
@@ -183,6 +201,7 @@ def compute_invoice_totals(session: Session, invoice: Invoice, on_date: date) ->
 # Snapshot
 # --------------------------------------------------------------------------- #
 def _date_str(value: date | None) -> str | None:
+    """Render a date as an ISO-8601 string for the snapshot, preserving None."""
     return value.isoformat() if value is not None else None
 
 
