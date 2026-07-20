@@ -54,6 +54,18 @@ class InvoiceUpdate(_InvoiceWriteBase):
     """Full replace of a draft's editable fields, including lines."""
 
 
+class PreviewTotalsRequest(BaseModel):
+    """Stateless totals preview for the draft editor: lines in, totals out.
+
+    Reuses ``LineInputSchema``, so money arrives under exactly the same rules as
+    a real draft — strings (or exactly-parsed JSON numbers), never floats.
+    ``on_date`` selects which effective-dated rates apply; it defaults to today.
+    """
+
+    lines: list[LineInputSchema] = Field(default_factory=list)
+    on_date: date | None = None
+
+
 class IssueRequest(BaseModel):
     invoice_date: date | None = None
     tax_point_date: date | None = None
