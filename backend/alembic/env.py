@@ -4,16 +4,20 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+from app.core.config import settings
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
-# The database URL comes from the environment (DATABASE_URL), never the .ini file.
-# This keeps credentials out of version control and matches how the app is configured.
-database_url = os.environ.get("DATABASE_URL")
-if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
+# The database URL never comes from the .ini file — that keeps credentials out
+# of version control. It is resolved exactly the way the app resolves it:
+# DATABASE_URL from the environment if set, otherwise app settings, which read
+# backend/.env. Reading only the environment (as this once did) meant the
+# documented quickstart — copy .env.example to backend/.env, then
+# `alembic upgrade head` — failed with an opaque "Could not parse SQLAlchemy
+# URL" for anyone who had not also exported the variable by hand.
+config.set_main_option("sqlalchemy.url", os.environ.get("DATABASE_URL") or settings.database_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
