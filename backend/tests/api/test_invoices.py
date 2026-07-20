@@ -1,10 +1,13 @@
 """API tests for the invoice lifecycle: drafts, totals, issue, void,
 immutability, gapless numbering, archived clients, and tax-point rates."""
 
-from datetime import date
+from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
+
+from app.core.vat import LineInput, VatRateCode, compute_totals
 
 CLIENT_PAYLOAD = {
     "name": "Acme Ltd",
@@ -270,3 +273,128 @@ def test_float_in_json_parses_exactly_and_snapshot_stores_strings(client, db_eng
             {"id": issued["id"]},
         ).scalar()
     assert typ == "string"
+
+
+# --------------------------------------------------------------------------- #
+# Totals: computed for drafts, served from the snapshot for issued/void
+# --------------------------------------------------------------------------- #
+def test_totals_of_issued_invoice_ignore_later_rate_changes(client, db_engine_for_test):
+    """An issued invoice's /totals must come from its snapshot, never a
+    recomputation. A VAT rate change after issue must not move its money."""
+    issued = _issue_one(client)
+    snapshot_totals = issued["snapshot"]["totals"]
+    assert snapshot_totals == {"net": "20.00", "vat": "4.00", "gross": "24.00"}
+
+    # A new standard rate takes effect today — 50%, unmistakably different.
+    with db_engine_for_test.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE vat_rate SET valid_to = :yesterday "
+                "WHERE code = 'standard' AND valid_to IS NULL"
+            ),
+            {"yesterday": date.today() - timedelta(days=1)},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO vat_rate (code, rate, valid_from, valid_to) "
+                "VALUES ('standard', 0.5000, :today, NULL)"
+            ),
+            {"today": date.today()},
+        )
+
+    totals = client.get(f"/api/v1/invoices/{issued['id']}/totals").json()
+    assert totals["total_net"] == snapshot_totals["net"]
+    assert totals["total_vat"] == snapshot_totals["vat"]  # 4.00, not the 10.00 a recompute gives
+    assert totals["total_gross"] == snapshot_totals["gross"]
+    assert totals["groups"][0]["rate"] == "0.2000"  # the rate in force at issue
+
+
+def test_totals_of_void_invoice_come_from_the_snapshot(client):
+    issued = _issue_one(client)
+    client.post(f"/api/v1/invoices/{issued['id']}/void")
+    totals = client.get(f"/api/v1/invoices/{issued['id']}/totals").json()
+    assert totals["total_gross"] == issued["snapshot"]["totals"]["gross"]
+
+
+def test_totals_of_draft_are_still_computed_live(client):
+    """The draft path is unchanged: edit the lines, the totals follow."""
+    client_id = _make_client(client)
+    draft = _make_draft(client, client_id)
+    assert client.get(f"/api/v1/invoices/{draft['id']}/totals").json()["total_net"] == "20.00"
+
+    client.put(
+        f"/api/v1/invoices/{draft['id']}",
+        json={
+            "client_id": client_id,
+            "lines": [
+                {
+                    "position": 1,
+                    "description": "Consulting",
+                    "quantity": "3.000",
+                    "unit_price": "10.0000",
+                    "vat_rate_code": "standard",
+                }
+            ],
+        },
+    )
+    assert client.get(f"/api/v1/invoices/{draft['id']}/totals").json()["total_net"] == "30.00"
+
+
+# --------------------------------------------------------------------------- #
+# preview-totals: stateless totals for unsaved editor state
+# --------------------------------------------------------------------------- #
+PREVIEW_LINES = [
+    {
+        "position": 1,
+        "description": "Consulting",
+        "quantity": "2.000",
+        "unit_price": "10.0000",
+        "vat_rate_code": "standard",
+    },
+    {
+        "position": 2,
+        "description": "Booklet",
+        "quantity": "3.000",
+        "unit_price": "5.0000",
+        "vat_rate_code": "zero",
+    },
+]
+
+
+def test_preview_totals_matches_compute_totals(client):
+    resp = client.post("/api/v1/invoices/preview-totals", json={"lines": PREVIEW_LINES})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # The same answer app.core.vat.compute_totals gives for these inputs.
+    expected = compute_totals(
+        [
+            LineInput(Decimal("2.000"), Decimal("10.0000"), VatRateCode.standard),
+            LineInput(Decimal("3.000"), Decimal("5.0000"), VatRateCode.zero),
+        ],
+        {
+            VatRateCode.standard: Decimal("0.2000"),
+            VatRateCode.reduced: Decimal("0.0500"),
+            VatRateCode.zero: Decimal("0.0000"),
+            VatRateCode.exempt: Decimal("0.0000"),
+        },
+    )
+    assert body["total_net"] == str(expected.total_net) == "35.00"
+    assert body["total_vat"] == str(expected.total_vat) == "4.00"
+    assert body["total_gross"] == str(expected.total_gross) == "39.00"
+    assert [group["code"] for group in body["groups"]] == ["standard", "zero"]
+
+
+def test_preview_totals_persists_nothing(client):
+    before = len(client.get("/api/v1/invoices").json())
+    client.post("/api/v1/invoices/preview-totals", json={"lines": PREVIEW_LINES})
+    assert len(client.get("/api/v1/invoices").json()) == before
+
+
+def test_preview_totals_before_seed_date_is_422(client):
+    resp = client.post(
+        "/api/v1/invoices/preview-totals",
+        json={"lines": PREVIEW_LINES, "on_date": "2010-12-31"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "validation_failed"

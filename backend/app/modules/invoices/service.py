@@ -166,7 +166,36 @@ def delete_draft(session: Session, invoice_id: int) -> None:
 # --------------------------------------------------------------------------- #
 # Totals (drafts, on demand — never persisted)
 # --------------------------------------------------------------------------- #
+def totals_from_snapshot(invoice: Invoice) -> dict:
+    """Read an issued/void invoice's totals back out of its snapshot.
+
+    No arithmetic happens here: the money strings written at issue are handed
+    back verbatim, in the same shape ``compute_invoice_totals`` produces. This is
+    the source of truth ``GET /invoices/{id}`` already serves, so the two
+    endpoints cannot disagree — which they would if this recomputed, since a VAT
+    rate change after issue would produce different numbers from the ones on the
+    issued document.
+    """
+    snapshot = invoice.snapshot or {}
+    totals = snapshot.get("totals", {})
+    return {
+        "groups": snapshot.get("groups", []),
+        "total_net": totals.get("net"),
+        "total_vat": totals.get("vat"),
+        "total_gross": totals.get("gross"),
+    }
+
+
 def compute_invoice_totals(session: Session, invoice: Invoice, on_date: date) -> InvoiceTotals:
+    """Compute an invoice's totals from its current lines, at ``on_date``'s rates.
+
+    Persists nothing — this is the on-demand view a draft's editor asks for.
+    Only drafts should reach this: an issued invoice's money is fixed at issue
+    and is read back with ``totals_from_snapshot`` instead.
+
+    Propagates :class:`LookupError` from ``rates_on`` when a rate is missing for
+    the date; callers decide how to surface it.
+    """
     rates = rates_on(session, on_date)
     lines = [
         LineInput(
