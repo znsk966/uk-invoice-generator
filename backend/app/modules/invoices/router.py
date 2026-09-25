@@ -1,4 +1,8 @@
-"""Invoice endpoints. Thin wrappers over app.modules.invoices.service."""
+"""Invoice endpoints. Thin wrappers over app.modules.invoices.service.
+
+Every endpoint is scoped to the authenticated owner: lists show only the user's
+own invoices, and a lookup of another user's invoice returns 404 ``not_found``.
+"""
 
 from datetime import date
 
@@ -9,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.core.db import get_session
 from app.core.errors import VALIDATION_FAILED, AppError
 from app.core.vat import LineInput, compute_totals
+from app.modules.auth.deps import current_user
+from app.modules.auth.models import User
 from app.modules.invoices import service
 from app.modules.invoices.models import Invoice, InvoiceStatus
 from app.modules.invoices.schemas import (
@@ -28,39 +34,57 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 def list_invoices(
     status: InvoiceStatus | None = Query(default=None),
     session: Session = Depends(get_session),
+    user: User = Depends(current_user),
 ) -> list[Invoice]:
-    stmt = select(Invoice).order_by(Invoice.id)
+    stmt = select(Invoice).where(Invoice.owner_id == user.id).order_by(Invoice.id)
     if status is not None:
         stmt = stmt.where(Invoice.status == status)
     return list(session.scalars(stmt))
 
 
 @router.post("", response_model=InvoiceRead, status_code=201)
-def create_invoice(payload: InvoiceCreate, session: Session = Depends(get_session)) -> Invoice:
-    return service.create_draft(session, payload)
+def create_invoice(
+    payload: InvoiceCreate,
+    session: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> Invoice:
+    return service.create_draft(session, user.id, payload)
 
 
 @router.get("/{invoice_id}", response_model=InvoiceRead)
-def get_invoice(invoice_id: int, session: Session = Depends(get_session)) -> Invoice:
-    return service.get_invoice_or_404(session, invoice_id)
+def get_invoice(
+    invoice_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> Invoice:
+    return service.get_invoice_or_404(session, user.id, invoice_id)
 
 
 @router.put("/{invoice_id}", response_model=InvoiceRead)
 def update_invoice(
-    invoice_id: int, payload: InvoiceUpdate, session: Session = Depends(get_session)
+    invoice_id: int,
+    payload: InvoiceUpdate,
+    session: Session = Depends(get_session),
+    user: User = Depends(current_user),
 ) -> Invoice:
-    return service.replace_draft(session, invoice_id, payload)
+    return service.replace_draft(session, user.id, invoice_id, payload)
 
 
 @router.delete("/{invoice_id}", status_code=204)
-def delete_invoice(invoice_id: int, session: Session = Depends(get_session)) -> Response:
-    service.delete_draft(session, invoice_id)
+def delete_invoice(
+    invoice_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> Response:
+    service.delete_draft(session, user.id, invoice_id)
     return Response(status_code=204)
 
 
 @router.get("/{invoice_id}/totals", response_model=InvoiceTotalsRead)
 def get_invoice_totals(
-    invoice_id: int, session: Session = Depends(get_session)
+    invoice_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(current_user),
 ) -> InvoiceTotalsRead:
     """Totals for an invoice. Persists nothing.
 
@@ -72,7 +96,7 @@ def get_invoice_totals(
       change afterwards must not alter what this returns. This is the same
       source ``GET /invoices/{id}`` serves.
     """
-    invoice = service.get_invoice_or_404(session, invoice_id)
+    invoice = service.get_invoice_or_404(session, user.id, invoice_id)
     if invoice.status != InvoiceStatus.draft:
         return InvoiceTotalsRead.model_validate(service.totals_from_snapshot(invoice))
     totals = service.compute_invoice_totals(session, invoice, date.today())
@@ -81,14 +105,17 @@ def get_invoice_totals(
 
 @router.post("/preview-totals", response_model=InvoiceTotalsRead)
 def preview_totals(
-    payload: PreviewTotalsRequest, session: Session = Depends(get_session)
+    payload: PreviewTotalsRequest,
+    session: Session = Depends(get_session),
+    user: User = Depends(current_user),
 ) -> InvoiceTotalsRead:
     """Compute totals for a set of lines without touching the database.
 
-    Stateless: nothing is created, updated, or read except the VAT rates. The
-    draft editor calls this for live totals on **unsaved** edits, so the server
-    stays the only thing that does money arithmetic without every keystroke
-    having to autosave a draft.
+    Stateless: nothing is created, updated, or read except the VAT rates (which
+    are global). The draft editor calls this for live totals on **unsaved**
+    edits, so the server stays the only thing that does money arithmetic without
+    every keystroke having to autosave a draft. Requires authentication like
+    every other domain endpoint, but reads no per-owner data.
     """
     try:
         rates = rates_on(session, payload.on_date or date.today())
@@ -114,10 +141,12 @@ def issue_invoice(
     invoice_id: int,
     payload: IssueRequest | None = None,
     session: Session = Depends(get_session),
+    user: User = Depends(current_user),
 ) -> Invoice:
     body = payload or IssueRequest()
     return service.issue_invoice(
         session,
+        user.id,
         invoice_id,
         invoice_date=body.invoice_date,
         tax_point_date=body.tax_point_date,
@@ -126,5 +155,9 @@ def issue_invoice(
 
 
 @router.post("/{invoice_id}/void", response_model=InvoiceRead)
-def void_invoice(invoice_id: int, session: Session = Depends(get_session)) -> Invoice:
-    return service.void_invoice(session, invoice_id)
+def void_invoice(
+    invoice_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> Invoice:
+    return service.void_invoice(session, user.id, invoice_id)

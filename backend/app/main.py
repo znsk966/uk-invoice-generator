@@ -2,6 +2,7 @@ from fastapi import APIRouter, FastAPI
 
 from app.core.db import check_db
 from app.core.errors import register_error_handlers
+from app.modules.auth.router import router as auth_router
 from app.modules.clients.router import router as clients_router
 from app.modules.company.router import router as company_router
 from app.modules.invoices.router import router as invoices_router
@@ -20,6 +21,7 @@ def create_app() -> FastAPI:
         }
 
     api = APIRouter(prefix="/api/v1")
+    api.include_router(auth_router)
     api.include_router(clients_router)
     api.include_router(company_router)
     api.include_router(invoices_router)

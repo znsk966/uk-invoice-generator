@@ -12,11 +12,12 @@ The ``get_session`` dependency is overridden to bind to the *test* engine
 app's configured DATABASE_URL — API tests must never touch the dev database.
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import date
 from decimal import Decimal
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
@@ -31,6 +32,8 @@ _MUTABLE_TABLES = (
     "client",
     "company_profile",
     "number_sequence",
+    "user_session",
+    "user",
     "vat_rate",
 )
 
@@ -45,8 +48,10 @@ _SEED_RATES = {
 
 
 def _truncate(db_engine) -> None:
+    # Quote every name: "user" is a reserved word in Postgres.
+    tables = ", ".join(f'"{name}"' for name in _MUTABLE_TABLES)
     with db_engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {', '.join(_MUTABLE_TABLES)} RESTART IDENTITY CASCADE"))
+        conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
 
 
 def _seed_rates(db_engine) -> None:
@@ -72,7 +77,13 @@ def _clean_db(db_engine) -> Iterator[None]:
 
 
 @pytest.fixture
-def client(db_engine) -> Iterator[TestClient]:
+def app(db_engine) -> FastAPI:
+    """The ASGI app with ``get_session`` bound to the *test* engine.
+
+    Shared by every TestClient in a test, so two authenticated clients (two
+    owners) exercise the same database — which is what the cross-owner isolation
+    tests need.
+    """
     TestSession = sessionmaker(bind=db_engine, autoflush=False)
 
     def _override_get_session() -> Iterator[Session]:
@@ -86,10 +97,44 @@ def client(db_engine) -> Iterator[TestClient]:
         finally:
             session.close()
 
-    app = create_app()
-    app.dependency_overrides[get_session] = _override_get_session
-    with TestClient(app) as test_client:
-        yield test_client
+    application = create_app()
+    application.dependency_overrides[get_session] = _override_get_session
+    return application
+
+
+@pytest.fixture
+def login_as(app) -> Iterator[Callable[..., TestClient]]:
+    """Factory: register + authenticate a fresh user, returning an authed client.
+
+    The session cookie set by ``/auth/register`` lands in the TestClient's cookie
+    jar and rides along on every later request. Each call is a **distinct owner**
+    (auto-incrementing email unless one is given), so isolation tests can spin up
+    user A and user B independently.
+    """
+    opened: list[TestClient] = []
+    counter = {"n": 0}
+
+    def _login_as(email: str | None = None, password: str = "password123") -> TestClient:
+        if email is None:
+            counter["n"] += 1
+            email = f"user{counter['n']}@example.com"
+        test_client = TestClient(app)
+        resp = test_client.post(
+            "/api/v1/auth/register", json={"email": email, "password": password}
+        )
+        assert resp.status_code == 201, resp.text
+        opened.append(test_client)
+        return test_client
+
+    yield _login_as
+    for test_client in opened:
+        test_client.close()
+
+
+@pytest.fixture
+def client(login_as) -> TestClient:
+    """The default authenticated client (one owner). Existing tests use this."""
+    return login_as("owner@example.com")
 
 
 @pytest.fixture

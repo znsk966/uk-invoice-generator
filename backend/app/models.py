@@ -6,6 +6,7 @@ test table-creation fixture both import it for this side effect.
 """
 
 from app.core.db import Base
+from app.modules.auth.models import User, UserSession
 from app.modules.clients.models import Client
 from app.modules.company.models import CompanyProfile
 from app.modules.invoices.models import Invoice, InvoiceLine
@@ -19,5 +20,7 @@ __all__ = [
     "Invoice",
     "InvoiceLine",
     "NumberSequence",
+    "User",
+    "UserSession",
     "VatRate",
 ]

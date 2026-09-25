@@ -21,6 +21,9 @@ INVOICE_NOT_DRAFT = "invoice_not_draft"
 INVOICE_NOT_ISSUED = "invoice_not_issued"
 VALIDATION_FAILED = "validation_failed"
 COMPANY_PROFILE_MISSING = "company_profile_missing"
+EMAIL_TAKEN = "email_taken"
+INVALID_CREDENTIALS = "invalid_credentials"
+NOT_AUTHENTICATED = "not_authenticated"
 
 
 class AppError(Exception):

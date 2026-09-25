@@ -4,11 +4,11 @@ An open-source **proof-of-concept invoice generator for the UK market**: draft a
 invoice, let the server compute the VAT, issue it against a gapless number, and
 keep the issued document immutable forever after.
 
-> **Status: Phase 3 complete — the backend is feature-complete and there is a
-> working React UI.** The full invoice lifecycle works end to end over the API
-> and through the browser: create a client, build a draft with live
-> server-computed totals, issue it, and see it locked. PDF generation is Phase 4.
-> See the [phase plan](docs/PHASE-PLAN.md).
+> **Status: Phase 4 complete — multi-user, with the full invoice lifecycle end
+> to end.** Register an account, then create a client, build a draft with live
+> server-computed totals, issue it, and see it locked — all scoped to your own
+> account. Each user has their own clients, profile, invoices, and numbering.
+> PDF generation is Phase 6. See the [phase plan](docs/PHASE-PLAN.md).
 
 ## What works today
 
@@ -33,9 +33,15 @@ keep the issued document immutable forever after.
   with **live totals**: as you edit lines the editor asks the server to compute
   them (debounced), so the browser never does money arithmetic. Issue from a
   confirmation dialog; issued invoices render read-only from the snapshot.
+- **Accounts & per-user ownership** — register / log in / log out (argon2id
+  passwords, an HTTP-only session cookie). Every user owns their own clients,
+  company profile, invoices, and invoice numbering; another user's data is
+  invisible (a 404, never a 403). Two users can both hold `INV-2026-00001`.
 
-Out of scope for the PoC, deliberately: multi-tenancy, HMRC / Making Tax
-Digital, e-invoicing, multi-currency, credit notes, and real authentication.
+Out of scope for the PoC, deliberately: multi-tenancy (in the SaaS sense —
+per-user ownership is not the same thing), HMRC / Making Tax Digital,
+e-invoicing, multi-currency, credit notes, and — within auth — email
+verification, password reset, OAuth, and roles/permissions.
 
 ## How it's built
 
@@ -54,6 +60,7 @@ for, what was built, what review changed.
 - [`prompts/PROMPT-03.md`](prompts/PROMPT-03.md) — the API → PR #3
 - [`prompts/PROMPT-04A.md`](prompts/PROMPT-04A.md) — full documentation pass → PR #4
 - [`prompts/PROMPT-04.md`](prompts/PROMPT-04.md) — the React frontend (plus a `/totals` fix and `preview-totals`) → PR #5
+- [`prompts/PROMPT-05.md`](prompts/PROMPT-05.md) — auth & per-user ownership
 
 Review changed real things. The float ban gained a third enforcement layer after
 a reviewer showed the model boundary silently accepted `unit_price=0.1`, and the
@@ -67,7 +74,7 @@ bug.
 
 ## Stack
 
-- **Backend:** Python 3.12+ · FastAPI · SQLAlchemy 2 · Alembic · Pydantic v2
+- **Backend:** Python 3.12+ · FastAPI · SQLAlchemy 2 · Alembic · Pydantic v2 · argon2-cffi (password hashing)
 - **Frontend:** React 18 · Vite · TypeScript (strict) · Tailwind CSS v4 · React Router · TanStack Query · Vitest + Testing Library + MSW
 - **Database:** PostgreSQL 17
 - **CI:** GitHub Actions (Dockerized `postgres:17` service container; CI is authoritative)
@@ -113,8 +120,10 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-`alembic upgrade head` applies three migrations: the schema, the UK VAT rate
-seed, and the immutability triggers.
+`alembic upgrade head` applies four migrations: the schema, the UK VAT rate
+seed, the immutability triggers, and auth + per-user ownership. (That last one
+**aborts on a non-empty database** — it is a pre-1.0 change with no data-migration
+path, so migrate a fresh database.)
 
 The API is now at http://localhost:8000, with interactive OpenAPI docs at
 **http://localhost:8000/docs** — the authoritative endpoint reference.
@@ -148,9 +157,10 @@ npm run dev
 
 The UI is served at http://localhost:5173, with `/api` proxied to the backend on
 `localhost:8000` (see `vite.config.ts`) — so run the backend from step 3
-alongside it. From there you can fill in the company profile under **Settings**,
-add a **client**, build a **draft invoice** with live totals, and issue it; an
-issued invoice renders read-only from its snapshot.
+alongside it. On first load you'll be sent to **/register**; create an account,
+then fill in the company profile under **Settings**, add a **client**, build a
+**draft invoice** with live totals, and issue it; an issued invoice renders
+read-only from its snapshot. Everything you create is scoped to your account.
 
 Frontend checks mirror CI:
 
@@ -164,12 +174,29 @@ npm run build
 ## A 60-second API tour
 
 Every response below is real output from a freshly migrated instance, not an
-illustration. Set `A=http://localhost:8000/api/v1` first.
+illustration. Set `A=http://localhost:8000/api/v1` first. Every domain endpoint
+requires authentication, so we register once and reuse the session cookie via a
+cookie jar (`-c`/`-b`).
+
+**0. Register (and stay logged in via the cookie jar):**
+
+```bash
+curl -s -c cookies.txt -X POST $A/auth/register -H 'Content-Type: application/json' \
+  -d '{"email": "me@example.com", "password": "correct-horse-battery"}'
+```
+
+```json
+{"id":1,"email":"me@example.com"}
+```
+
+The response set an HTTP-only `session` cookie into `cookies.txt`. Pass `-b
+cookies.txt` on every later call (shown below); without it you get `401
+not_authenticated`.
 
 **1. Save the seller's profile** (required before anything can be issued):
 
 ```bash
-curl -s -X PUT $A/company-profile -H 'Content-Type: application/json' -d '{
+curl -s -b cookies.txt -X PUT $A/company-profile -H 'Content-Type: application/json' -d '{
   "trading_name": "Bramble Studio Ltd",
   "address_line1": "12 Fenchurch Avenue",
   "city": "London",
@@ -184,7 +211,7 @@ curl -s -X PUT $A/company-profile -H 'Content-Type: application/json' -d '{
 **2. Create a client:**
 
 ```bash
-curl -s -X POST $A/clients -H 'Content-Type: application/json' -d '{
+curl -s -b cookies.txt -X POST $A/clients -H 'Content-Type: application/json' -d '{
   "name": "Harbour Analytics Ltd",
   "address_line1": "4 Dock Road",
   "city": "Bristol",
@@ -200,7 +227,7 @@ curl -s -X POST $A/clients -H 'Content-Type: application/json' -d '{
 **3. Create a draft** with two lines at different VAT rates:
 
 ```bash
-curl -s -X POST $A/invoices -H 'Content-Type: application/json' -d '{
+curl -s -b cookies.txt -X POST $A/invoices -H 'Content-Type: application/json' -d '{
   "client_id": 1,
   "notes": "Q3 engagement",
   "due_date": "2026-08-19",
@@ -220,7 +247,7 @@ A draft has no number and no snapshot. Money is sent and returned as **strings**
 **4. Ask the server for the totals** — the client never computes them:
 
 ```bash
-curl -s $A/invoices/1/totals
+curl -s -b cookies.txt $A/invoices/1/totals
 ```
 
 ```json
@@ -244,7 +271,7 @@ UI editor works on **unsaved** edits, so it posts lines to the stateless
 **5. Issue it:**
 
 ```bash
-curl -s -X POST $A/invoices/1/issue -H 'Content-Type: application/json' \
+curl -s -b cookies.txt -X POST $A/invoices/1/issue -H 'Content-Type: application/json' \
   -d '{"invoice_date": "2026-07-20"}'
 ```
 
@@ -263,13 +290,13 @@ seller, the client, the lines, and the rates in force at the tax point.
 **6. Read it back** — money comes from the snapshot, never recomputed:
 
 ```bash
-curl -s $A/invoices/1
+curl -s -b cookies.txt $A/invoices/1
 ```
 
 Now try to change it:
 
 ```bash
-curl -s -X PUT $A/invoices/1 -H 'Content-Type: application/json' -d '{"client_id":1,"lines":[]}'
+curl -s -b cookies.txt -X PUT $A/invoices/1 -H 'Content-Type: application/json' -d '{"client_id":1,"lines":[]}'
 ```
 
 ```json
@@ -287,6 +314,16 @@ ERROR:  invoice_line of invoice 1 is immutable (invoice status=issued)
 ```
 
 The full snapshot, field by field, is in [INVOICING.md](docs/INVOICING.md).
+
+## Deploying safely
+
+This is a self-hosted PoC. Two things a public deployment must add:
+
+- **Serve over HTTPS and set `COOKIE_SECURE=true`** so the session cookie is
+  never sent in the clear. It defaults to off for local HTTP dev.
+- **Put a rate limit in front of `/api/v1/auth`** at your reverse proxy (nginx,
+  Caddy, a WAF, …). The app deliberately has no built-in rate limiting — login
+  and registration are otherwise open to brute-force and enumeration attempts.
 
 ## Documentation
 

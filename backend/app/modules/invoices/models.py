@@ -58,9 +58,12 @@ class Invoice(TimestampMixin, Base):
     __tablename__ = "invoice"
     __table_args__ = (
         CheckConstraint("currency = 'GBP'", name="ck_invoice_currency_gbp"),
-        # Unique invoice numbers, but only among rows that have one (issued).
+        # Unique invoice numbers **per owner**, among rows that have one (issued).
+        # Two different users legitimately both hold INV-2026-00001 — numbering
+        # is a per-user sequence.
         Index(
-            "uq_invoice_number",
+            "uq_invoice_owner_number",
+            "owner_id",
             "number",
             unique=True,
             postgresql_where=text("number IS NOT NULL"),
@@ -68,6 +71,9 @@ class Invoice(TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
     status: Mapped[InvoiceStatus] = mapped_column(
         invoice_status_enum,
         nullable=False,

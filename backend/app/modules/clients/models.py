@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -15,11 +15,17 @@ class Client(TimestampMixin, Base):
     Project Law: master data is archived, never hard-deleted, so issued
     invoices keep a valid reference. ``archived_at`` being non-null marks a
     client as archived; there is no DELETE path anywhere in this codebase.
+
+    Owned per user (``owner_id``): a client belongs to exactly one account and
+    is only ever reachable through queries scoped to that owner.
     """
 
     __tablename__ = "client"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     address_line1: Mapped[str] = mapped_column(String(255), nullable=False)

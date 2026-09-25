@@ -28,25 +28,53 @@ export const ERROR_CODES = {
   invoiceNotIssued: 'invoice_not_issued',
   validationFailed: 'validation_failed',
   companyProfileMissing: 'company_profile_missing',
+  emailTaken: 'email_taken',
+  invalidCredentials: 'invalid_credentials',
+  notAuthenticated: 'not_authenticated',
 } as const
 
 const BASE_URL = '/api/v1'
+
+/**
+ * Called whenever any request comes back 401. `App` registers a handler that
+ * drops the cached user and navigates to /login. Kept as a registered callback
+ * (not a hard `window.location` redirect) so it can use the SPA router and
+ * preserve a return-to path. Endpoints that legitimately expect a 401 (the
+ * `useMe` probe, the login form) opt out with `allow401`.
+ */
+type UnauthorizedHandler = () => void
+let onUnauthorized: UnauthorizedHandler = () => {}
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler): void {
+  onUnauthorized = handler
+}
 
 interface RequestOptions {
   method?: string
   body?: unknown
   signal?: AbortSignal
+  /** When true, a 401 is returned as an ApiError without triggering the global
+   *  redirect — for the auth probe and the login/register forms themselves. */
+  allow401?: boolean
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, signal } = options
+  const { method = 'GET', body, signal, allow401 = false } = options
 
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
     signal,
+    // Send and accept the HTTP-only session cookie on every request.
+    credentials: 'include',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
+
+  if (response.status === 401 && !allow401) {
+    // Session gone or never established: let the app tear down auth state and
+    // route to login before surfacing the error to the caller.
+    onUnauthorized()
+  }
 
   if (response.status === 204) {
     return undefined as T

@@ -24,6 +24,7 @@ BEGIN
     IF OLD.status = 'issued'
        AND NEW.status = 'void'
        AND NEW.id = OLD.id
+       AND NEW.owner_id = OLD.owner_id
        AND NEW.number IS NOT DISTINCT FROM OLD.number
        AND NEW.client_id = OLD.client_id
        AND NEW.invoice_date IS NOT DISTINCT FROM OLD.invoice_date

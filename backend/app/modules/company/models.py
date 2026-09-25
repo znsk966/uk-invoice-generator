@@ -1,6 +1,6 @@
 """The seller's own company profile — a single-row table."""
 
-from sqlalchemy import CheckConstraint, String
+from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -10,15 +10,20 @@ from app.core.mixins import TimestampMixin
 class CompanyProfile(TimestampMixin, Base):
     """The trading entity issuing invoices.
 
-    Enforced single row: ``id`` is a plain integer PK constrained to ``1``.
-    VAT and company numbers are nullable — not every business is VAT-registered
-    or incorporated. Bank details are nullable too.
+    One profile **per user**: ``UNIQUE (owner_id)`` makes it a singleton within
+    an account (the old global ``CHECK (id = 1)`` singleton is gone now that the
+    app is multi-user). VAT and company numbers are nullable — not every
+    business is VAT-registered or incorporated. Bank details are nullable too.
     """
 
     __tablename__ = "company_profile"
-    __table_args__ = (CheckConstraint("id = 1", name="ck_company_profile_single_row"),)
+    __table_args__ = (UniqueConstraint("owner_id", name="uq_company_profile_owner"),)
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # No index=True: the UNIQUE(owner_id) constraint above already indexes it.
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id", ondelete="RESTRICT"), nullable=False
+    )
 
     trading_name: Mapped[str] = mapped_column(String(255), nullable=False)
     address_line1: Mapped[str] = mapped_column(String(255), nullable=False)
