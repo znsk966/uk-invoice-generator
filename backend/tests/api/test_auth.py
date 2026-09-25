@@ -77,6 +77,78 @@ def test_wrong_password_and_unknown_email_are_identical_401(app, login_as):
     assert wrong_password.json()["detail"]["code"] == "invalid_credentials"
 
 
+def test_concurrent_registration_of_one_email_is_one_201_and_three_409(app, monkeypatch):
+    """Four simultaneous registrations of the same email: exactly one wins, the
+    rest get a clean 409 — never a 500 from an unhandled unique violation.
+
+    A barrier inside ``hash_password`` (which runs *after* the duplicate
+    pre-check, *before* the insert) holds every request until all four have
+    passed the pre-check, so the losers are guaranteed to hit the database's
+    unique constraint rather than the fast path.
+    """
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from app.modules.auth import service
+
+    real_hash = service.hash_password
+    barrier = threading.Barrier(4, timeout=30)
+
+    def _hash_after_everyone_passed_the_precheck(password: str) -> str:
+        barrier.wait()
+        return real_hash(password)
+
+    monkeypatch.setattr(service, "hash_password", _hash_after_everyone_passed_the_precheck)
+
+    codes: list[int] = []
+    lock = threading.Lock()
+
+    def _register() -> None:
+        with TestClient(app) as test_client:
+            resp = test_client.post(
+                "/api/v1/auth/register",
+                json={"email": "race@example.com", "password": "password123"},
+            )
+        with lock:
+            codes.append(resp.status_code)
+            if resp.status_code == 409:
+                assert resp.json()["detail"]["code"] == "email_taken"
+
+    threads = [threading.Thread(target=_register) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(codes) == [201, 409, 409, 409]
+
+
+def test_unknown_email_login_still_runs_password_verification(app, monkeypatch):
+    """Timing side-channel guard: the unknown-email path must still do an argon2
+    verify (against the dummy hash), so it is not measurably faster than a wrong
+    password. Asserted with a spy — a wall-clock test would be flaky in CI."""
+    from fastapi.testclient import TestClient
+
+    from app.modules.auth import service
+
+    calls: list[str] = []
+    real_verify = service.verify_password
+
+    def _spy(password_hash: str, password: str) -> bool:
+        calls.append(password_hash)
+        return real_verify(password_hash, password)
+
+    monkeypatch.setattr(service, "verify_password", _spy)
+
+    resp = TestClient(app).post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "whatever123"},
+    )
+    assert resp.status_code == 401
+    assert calls == [service._DUMMY_HASH]
+
+
 def test_me_without_cookie_is_401(app):
     from fastapi.testclient import TestClient
 

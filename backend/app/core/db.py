@@ -8,6 +8,7 @@ per request and is the only place anything commits. See
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -41,6 +42,16 @@ def get_session() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def is_unique_violation(exc: IntegrityError, constraint_name: str) -> bool:
+    """True if ``exc`` is a unique violation of exactly ``constraint_name``.
+
+    Used where a known race is turned into a clean 409: narrowing to the named
+    constraint means any *other* integrity error still surfaces as a bug.
+    """
+    diag = getattr(exc.orig, "diag", None)
+    return getattr(diag, "constraint_name", None) == constraint_name
 
 
 def check_db() -> bool:

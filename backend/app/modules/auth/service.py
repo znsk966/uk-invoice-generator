@@ -8,8 +8,10 @@ token *hash* is ever persisted.
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.db import is_unique_violation
 from app.core.errors import (
     EMAIL_TAKEN,
     INVALID_CREDENTIALS,
@@ -24,20 +26,39 @@ from app.modules.auth.security import (
     verify_password,
 )
 
+# A real argon2 hash of a throwaway password, computed once at import. ``login``
+# verifies against it when the email is unknown, so both paths pay the same
+# argon2 cost and response time does not reveal whether an email is registered.
+# Defense in depth only: ``/register``'s 409 already reveals registration.
+_DUMMY_HASH = hash_password("dummy-password-for-constant-time-login")
+
+_EMAIL_TAKEN_MESSAGE = "That email address is already registered."
+
 
 def register(session: Session, *, email: str, password: str) -> tuple[User, str]:
     """Create a user and an initial session. Returns ``(user, raw_token)``.
 
     Duplicate email → 409 ``email_taken``. Registration logs the user straight
     in, so a session token comes back with the new user.
+
+    The pre-check is the fast path; the unique constraint is the real guard.
+    Two concurrent registrations can both pass the pre-check, so the insert runs
+    in a savepoint: the loser's unique violation rolls back only the savepoint,
+    leaving the request transaction usable, and becomes a 409 instead of a 500.
     """
     existing = session.scalar(select(User).where(User.email == email))
     if existing is not None:
-        raise AppError(409, EMAIL_TAKEN, "That email address is already registered.")
+        raise AppError(409, EMAIL_TAKEN, _EMAIL_TAKEN_MESSAGE)
 
     user = User(email=email, password_hash=hash_password(password))
-    session.add(user)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(user)
+            session.flush()
+    except IntegrityError as exc:
+        if is_unique_violation(exc, "uq_user_email"):
+            raise AppError(409, EMAIL_TAKEN, _EMAIL_TAKEN_MESSAGE) from exc
+        raise
 
     token = _create_session(session, user)
     return user, token
@@ -51,7 +72,12 @@ def login(session: Session, *, email: str, password: str) -> tuple[User, str]:
     attacker cannot probe which emails are registered.
     """
     user = session.scalar(select(User).where(User.email == email))
-    if user is None or not verify_password(user.password_hash, password):
+    if user is None:
+        # Burn the same argon2 work as a real check (result discarded) so an
+        # unknown email is not measurably faster than a wrong password.
+        verify_password(_DUMMY_HASH, password)
+        raise AppError(401, INVALID_CREDENTIALS, "Incorrect email or password.")
+    if not verify_password(user.password_hash, password):
         raise AppError(401, INVALID_CREDENTIALS, "Incorrect email or password.")
 
     token = _create_session(session, user)

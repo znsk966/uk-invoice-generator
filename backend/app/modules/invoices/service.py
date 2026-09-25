@@ -7,7 +7,10 @@ atomic: if anything fails after a number is allocated, the rollback returns the
 number to the sequence, keeping invoice numbering gapless.
 """
 
+from collections.abc import Collection, Iterable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,6 +21,7 @@ from app.core.errors import (
     INVOICE_NOT_DRAFT,
     INVOICE_NOT_ISSUED,
     NOT_FOUND,
+    PRODUCT_ARCHIVED,
     VALIDATION_FAILED,
     AppError,
 )
@@ -27,13 +31,18 @@ from app.core.numbering import (
     format_invoice_number,
     invoice_sequence_key,
 )
-from app.core.vat import InvoiceTotals, LineInput, compute_totals
+from app.core.vat import InvoiceTotals, LineInput, VatRateCode, compute_totals
 from app.modules.clients.models import Client
 from app.modules.company.models import CompanyProfile
 from app.modules.invoices.models import Invoice, InvoiceLine, InvoiceStatus
+from app.modules.products.models import Product
+from app.modules.products.service import get_product_or_404
 from app.modules.vat.repository import rates_on
 
-SNAPSHOT_VERSION = 1
+# v2 (Phase 5) adds product_id / product_code / kind to each line, null for
+# ad-hoc lines. v1 snapshots already stored stay valid: readers must treat the
+# v2 line fields as optional. Snapshots are never backfilled or rewritten.
+SNAPSHOT_VERSION = 2
 
 _SELLER_FIELDS = (
     "trading_name",
@@ -108,12 +117,111 @@ def _require_active_client(session: Session, owner_id: int, client_id: int) -> C
 
 
 # --------------------------------------------------------------------------- #
+# Line resolution (catalog links)
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class ResolvedLine:
+    """A request line with every field settled: what gets stored or totalled."""
+
+    position: int
+    product_id: int | None
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    vat_rate_code: VatRateCode
+
+    def to_model(self) -> InvoiceLine:
+        return InvoiceLine(
+            position=self.position,
+            product_id=self.product_id,
+            description=self.description,
+            quantity=self.quantity,
+            unit_price=self.unit_price,
+            vat_rate_code=self.vat_rate_code,
+        )
+
+    def to_input(self) -> LineInput:
+        return LineInput(
+            quantity=self.quantity,
+            unit_price=self.unit_price,
+            vat_rate_code=self.vat_rate_code,
+        )
+
+
+def resolve_lines(
+    session: Session,
+    owner_id: int,
+    lines: Iterable,
+    *,
+    previously_linked: Collection[int] = (),
+    reject_archived: bool = True,
+) -> list[ResolvedLine]:
+    """Settle each request line, applying the catalog rules.
+
+    Ad-hoc lines (no ``product_id``) pass through as sent. For a catalog line:
+
+    * the product is loaded **for this owner** — anyone else's is 404;
+    * ``description`` and ``vat_rate_code`` are copied from the product, and
+      whatever the client sent for them is ignored: the server is authoritative
+      (the DB trigger would reject a mismatch anyway);
+    * ``unit_price`` is the client's, or the product's current price if omitted;
+    * an archived product is 409 ``product_archived`` — but only if it is being
+      *newly* linked. A product already in ``previously_linked`` (i.e. on the
+      draft before this save) may stay even though it was archived since, so
+      re-saving an old draft never fails. ``reject_archived=False`` skips the
+      check entirely (the stateless preview, which cannot tell new from old).
+    """
+    products: dict[int, Product] = {}
+    resolved = []
+    for line in lines:
+        if line.product_id is None:
+            resolved.append(
+                ResolvedLine(
+                    position=line.position,
+                    product_id=None,
+                    description=line.description,
+                    quantity=line.quantity,
+                    unit_price=line.unit_price,
+                    vat_rate_code=line.vat_rate_code,
+                )
+            )
+            continue
+
+        product = products.get(line.product_id)
+        if product is None:
+            product = get_product_or_404(session, owner_id, line.product_id)
+            products[line.product_id] = product
+        if (
+            reject_archived
+            and product.archived_at is not None
+            and product.id not in previously_linked
+        ):
+            raise AppError(
+                409,
+                PRODUCT_ARCHIVED,
+                f"Product {product.code!r} is archived and cannot be added to an invoice.",
+            )
+        resolved.append(
+            ResolvedLine(
+                position=line.position,
+                product_id=product.id,
+                description=product.description,
+                quantity=line.quantity,
+                unit_price=line.unit_price if line.unit_price is not None else product.unit_price,
+                vat_rate_code=product.vat_rate_code,
+            )
+        )
+    return resolved
+
+
+# --------------------------------------------------------------------------- #
 # Draft CRUD
 # --------------------------------------------------------------------------- #
 def create_draft(session: Session, owner_id: int, payload) -> Invoice:
     """Create a draft invoice for ``owner_id``. Drafts have no number, no fixed
     dates, no stored money — only the inputs."""
     _require_active_client(session, owner_id, payload.client_id)
+    lines = resolve_lines(session, owner_id, payload.lines)
     invoice = Invoice(
         owner_id=owner_id,
         status=InvoiceStatus.draft,
@@ -121,16 +229,7 @@ def create_draft(session: Session, owner_id: int, payload) -> Invoice:
         notes=payload.notes,
         due_date=payload.due_date,
     )
-    invoice.lines = [
-        InvoiceLine(
-            position=line.position,
-            description=line.description,
-            quantity=line.quantity,
-            unit_price=line.unit_price,
-            vat_rate_code=line.vat_rate_code,
-        )
-        for line in payload.lines
-    ]
+    invoice.lines = [line.to_model() for line in lines]
     session.add(invoice)
     session.flush()
     return invoice
@@ -147,21 +246,16 @@ def replace_draft(session: Session, owner_id: int, invoice_id: int, payload) -> 
     if invoice.status != InvoiceStatus.draft:
         raise AppError(409, INVOICE_NOT_DRAFT, "Only draft invoices can be edited.")
     _require_active_client(session, owner_id, payload.client_id)
+    # Products already on the draft may stay even if archived since; read them
+    # before the lines are replaced.
+    previously_linked = {line.product_id for line in invoice.lines if line.product_id}
+    lines = resolve_lines(session, owner_id, payload.lines, previously_linked=previously_linked)
 
     invoice.client_id = payload.client_id
     invoice.notes = payload.notes
     invoice.due_date = payload.due_date
     # delete-orphan cascade removes the old lines when the collection is replaced.
-    invoice.lines = [
-        InvoiceLine(
-            position=line.position,
-            description=line.description,
-            quantity=line.quantity,
-            unit_price=line.unit_price,
-            vat_rate_code=line.vat_rate_code,
-        )
-        for line in payload.lines
-    ]
+    invoice.lines = [line.to_model() for line in lines]
     session.flush()
     return invoice
 
@@ -244,12 +338,13 @@ def build_snapshot(
     due_date: date | None,
 ) -> dict:
     """Freeze everything an issued invoice needs, with all money as strings
-    (JSON numbers are floats — banned). Shape is versioned and frozen; Phase 4's
-    PDF reads only this structure."""
+    (JSON numbers are floats — banned). Shape is versioned; the PDF (Phase 6)
+    reads only this structure and must accept both v1 and v2 lines."""
     lines = []
     for line in invoice.lines:
         rate = rates[line.vat_rate_code]
         line_net = round_money(line.quantity * line.unit_price)
+        product = line.product
         lines.append(
             {
                 "position": line.position,
@@ -259,6 +354,10 @@ def build_snapshot(
                 "vat_rate_code": line.vat_rate_code.value,
                 "rate": str(rate),
                 "line_net": str(line_net),
+                # v2: catalog provenance, null on ad-hoc lines.
+                "product_id": product.id if product is not None else None,
+                "product_code": product.code if product is not None else None,
+                "kind": product.kind.value if product is not None else None,
             }
         )
 

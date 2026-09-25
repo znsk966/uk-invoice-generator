@@ -25,11 +25,34 @@ Money = Annotated[Decimal, Field(allow_inf_nan=False)]
 
 
 class LineInputSchema(BaseModel):
+    """One line as the client sends it. Two shapes share this schema:
+
+    * **Ad-hoc line** (``product_id`` null): ``description``, ``vat_rate_code``
+      and ``unit_price`` are all required — the client is the source of them.
+    * **Catalog line** (``product_id`` set): the server is authoritative for
+      ``description`` and ``vat_rate_code`` — it copies them from the product and
+      **ignores whatever the client sent**. ``unit_price`` is optional and
+      defaults to the product's current price.
+    """
+
     position: int = Field(ge=1)
-    description: str = Field(min_length=1)
+    product_id: int | None = None
+    description: str | None = None
     quantity: Money
-    unit_price: Money
-    vat_rate_code: VatRateCode
+    unit_price: Money | None = None
+    vat_rate_code: VatRateCode | None = None
+
+    @model_validator(mode="after")
+    def _ad_hoc_lines_are_complete(self) -> "LineInputSchema":
+        if self.product_id is not None:
+            return self
+        if self.description is None or not self.description.strip():
+            raise ValueError("description is required on a line without a product")
+        if self.vat_rate_code is None:
+            raise ValueError("vat_rate_code is required on a line without a product")
+        if self.unit_price is None:
+            raise ValueError("unit_price is required on a line without a product")
+        return self
 
 
 class _InvoiceWriteBase(BaseModel):
@@ -77,6 +100,7 @@ class InvoiceLineRead(BaseModel):
 
     id: int
     position: int
+    product_id: int | None
     description: str
     quantity: Decimal
     unit_price: Decimal

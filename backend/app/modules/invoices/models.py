@@ -9,6 +9,7 @@ and a gapless ``number`` is allocated; issued invoices are then immutable.
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CheckConstraint,
@@ -30,6 +31,9 @@ from app.core.mixins import TimestampMixin
 from app.core.money import reject_float
 from app.core.vat import VatRateCode
 from app.modules.vat.models import vat_rate_code_enum
+
+if TYPE_CHECKING:
+    from app.modules.products.models import Product
 
 
 class InvoiceStatus(StrEnum):
@@ -121,7 +125,16 @@ class InvoiceLine(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4, asdecimal=True), nullable=False)
     vat_rate_code: Mapped[VatRateCode] = mapped_column(vat_rate_code_enum, nullable=False)
 
+    # Optional catalog link. NULL = an ad-hoc (free-text) line. When set, the
+    # line's ``description`` and ``vat_rate_code`` are enforced copies of the
+    # product's immutable identity (trigger ``trg_invoice_line_product_link``);
+    # ``unit_price`` stays the line's own and never follows later price edits.
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
     invoice: Mapped["Invoice"] = relationship(back_populates="lines")
+    product: Mapped["Product | None"] = relationship()
 
     @validates("quantity", "unit_price")
     def _reject_float(self, key: str, value: object) -> object:

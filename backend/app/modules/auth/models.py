@@ -8,7 +8,7 @@ token/hashing primitives.
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -18,9 +18,13 @@ class User(Base):
     """A registered user. Email is unique and always stored lowercased."""
 
     __tablename__ = "user"
+    # Named explicitly (matching the migration) so the test schema built from
+    # metadata and the migrated schema agree: ``register`` maps a violation of
+    # this exact constraint to 409 ``email_taken``.
+    __table_args__ = (UniqueConstraint("email", name="uq_user_email"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -16,7 +16,8 @@ import { formatMoney, formatRate } from '../shared/money'
  * archiving the client or changing a VAT rate tomorrow cannot alter what this
  * shows. The layout deliberately follows a real UK invoice (seller top-left,
  * meta top-right, lines, VAT breakdown, totals bottom-right, bank details
- * footer); Phase 4's PDF renders the same structure from the same source.
+ * footer); the Phase 6 PDF renders the same structure from the same source.
+ * Both snapshot versions render: v2 adds optional product fields per line.
  */
 export function InvoiceView() {
   const { id } = useParams()
@@ -136,7 +137,19 @@ export function InvoiceView() {
           <tbody>
             {snapshot.lines.map((line) => (
               <tr key={line.position} className="border-b border-gray-100">
-                <td className="py-2 pr-4">{line.description}</td>
+                <td className="py-2 pr-4">
+                  {line.description}
+                  {/* v2 snapshots only, and only on catalog lines; a v1
+                      snapshot has no product fields at all. */}
+                  {line.product_code ? (
+                    <span
+                      data-testid={`product-code-${line.position}`}
+                      className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-600"
+                    >
+                      {line.product_code}
+                    </span>
+                  ) : null}
+                </td>
                 <td className="py-2 pr-4 text-right tabular-nums">{line.quantity}</td>
                 <td className="py-2 pr-4 text-right tabular-nums">
                   {formatMoney(line.unit_price)}

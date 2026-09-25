@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_session
 from app.core.errors import VALIDATION_FAILED, AppError
-from app.core.vat import LineInput, compute_totals
+from app.core.vat import compute_totals
 from app.modules.auth.deps import current_user
 from app.modules.auth.models import User
 from app.modules.invoices import service
@@ -109,30 +109,26 @@ def preview_totals(
     session: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> InvoiceTotalsRead:
-    """Compute totals for a set of lines without touching the database.
+    """Compute totals for a set of lines without writing to the database.
 
-    Stateless: nothing is created, updated, or read except the VAT rates (which
-    are global). The draft editor calls this for live totals on **unsaved**
-    edits, so the server stays the only thing that does money arithmetic without
-    every keystroke having to autosave a draft. Requires authentication like
-    every other domain endpoint, but reads no per-owner data.
+    Stateless: nothing is created or updated. The draft editor calls this for
+    live totals on **unsaved** edits, so the server stays the only thing that
+    does money arithmetic without every keystroke having to autosave a draft.
+
+    Catalog lines are resolved exactly as a save would resolve them: the
+    product is loaded for the current owner (404 otherwise) and its VAT rate
+    replaces whatever the client sent. Archived products are *not* rejected
+    here — a stateless preview cannot tell a newly added product from one
+    already on the draft, and the editor must keep showing totals for an old
+    draft whose product was archived later. The save is where that rule bites.
     """
     try:
         rates = rates_on(session, payload.on_date or date.today())
     except LookupError as exc:
         raise AppError(422, VALIDATION_FAILED, str(exc)) from exc
 
-    totals = compute_totals(
-        [
-            LineInput(
-                quantity=line.quantity,
-                unit_price=line.unit_price,
-                vat_rate_code=line.vat_rate_code,
-            )
-            for line in payload.lines
-        ],
-        rates,
-    )
+    lines = service.resolve_lines(session, user.id, payload.lines, reject_archived=False)
+    totals = compute_totals([line.to_input() for line in lines], rates)
     return InvoiceTotalsRead.model_validate(totals, from_attributes=True)
 
 

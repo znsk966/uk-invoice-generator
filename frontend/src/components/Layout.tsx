@@ -7,6 +7,7 @@ import { ME_QUERY_KEY, useMe } from '../shared/useMe'
 const NAV = [
   { to: '/invoices', label: 'Invoices' },
   { to: '/clients', label: 'Clients' },
+  { to: '/products', label: 'Products' },
   { to: '/settings', label: 'Settings' },
 ]
 

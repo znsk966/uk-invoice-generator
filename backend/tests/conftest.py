@@ -6,9 +6,9 @@ against the app's DATABASE_URL. In CI, TEST_DATABASE_URL points at the
 throwaway ``uk_invoice_test`` service database.
 
 The schema is built once per session from the models' metadata, plus the exact
-same immutability triggers the Alembic migration installs (imported from
-app.modules.invoices.immutability so the two never drift). It is torn down at
-session end.
+same triggers the Alembic migrations install (invoice immutability and catalog
+integrity, imported from their shared-DDL modules so the two never drift). It is
+torn down at session end.
 
 Isolation strategy differs by tier and is provided by the per-tier conftests:
 - DB tier (``tests/db``): ``db_session`` wraps each test in a rolled-back
@@ -25,6 +25,18 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Base  # imported for the side effect of populating metadata
 from app.modules.invoices.immutability import IMMUTABILITY_DOWN_SQL, IMMUTABILITY_UP_SQL
+from app.modules.products.integrity import PRODUCT_INTEGRITY_DOWN_SQL, PRODUCT_INTEGRITY_UP_SQL
+
+# Trigger DDL in install order; torn down in reverse.
+_TRIGGERS_UP = (IMMUTABILITY_UP_SQL, PRODUCT_INTEGRITY_UP_SQL)
+_TRIGGERS_DOWN = (PRODUCT_INTEGRITY_DOWN_SQL, IMMUTABILITY_DOWN_SQL)
+
+
+def _run(engine, statements) -> None:
+    with engine.begin() as conn:
+        for sql in statements:
+            conn.execute(text(sql))
+
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -38,17 +50,14 @@ def db_engine():
         )
     engine = create_engine(TEST_DATABASE_URL)
     # Start from a clean slate even if a previous run left objects behind.
-    with engine.begin() as conn:
-        conn.execute(text(IMMUTABILITY_DOWN_SQL))
+    _run(engine, _TRIGGERS_DOWN)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
-    with engine.begin() as conn:
-        conn.execute(text(IMMUTABILITY_UP_SQL))
+    _run(engine, _TRIGGERS_UP)
     try:
         yield engine
     finally:
-        with engine.begin() as conn:
-            conn.execute(text(IMMUTABILITY_DOWN_SQL))
+        _run(engine, _TRIGGERS_DOWN)
         Base.metadata.drop_all(engine)
         engine.dispose()
 

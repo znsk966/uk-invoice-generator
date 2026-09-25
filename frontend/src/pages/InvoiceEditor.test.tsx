@@ -61,10 +61,44 @@ const SERVER_TOTALS = {
   total_gross: '1560.00',
 }
 
+// Deliberately different VAT and price from the draft's line, so every value
+// the picker copies is observable.
+const PRODUCT = {
+  id: 3,
+  code: 'BOOK',
+  description: 'Printed handbook',
+  kind: 'goods',
+  vat_rate_code: 'zero',
+  unit_price: '25.0000',
+  archived_at: null,
+  created_at: '2026-09-25T00:00:00Z',
+  updated_at: '2026-09-25T00:00:00Z',
+}
+const OTHER_PRODUCT = {
+  ...PRODUCT,
+  id: 4,
+  code: 'CONS-1H',
+  description: 'Consulting, per hour',
+  kind: 'service',
+  vat_rate_code: 'standard',
+  unit_price: '95.0000',
+}
+const ARCHIVED_PRODUCT = {
+  ...PRODUCT,
+  id: 5,
+  code: 'OLD',
+  description: 'Discontinued widget',
+  vat_rate_code: 'reduced',
+  archived_at: '2026-09-25T00:00:00Z',
+}
+
 let previewCalls = 0
 
 const server = setupServer(
   http.get('/api/v1/clients', () => HttpResponse.json([CLIENT])),
+  http.get('/api/v1/products', () =>
+    HttpResponse.json([PRODUCT, OTHER_PRODUCT, ARCHIVED_PRODUCT]),
+  ),
   http.get('/api/v1/invoices/7', () => HttpResponse.json(DRAFT)),
   http.post('/api/v1/invoices/preview-totals', () => {
     previewCalls += 1
@@ -155,6 +189,102 @@ describe('invoice editor live totals', () => {
     await user.type(description, ' extra')
 
     expect(screen.getByTestId('total-net').textContent).toBe('—')
+  })
+})
+
+describe('product picker', () => {
+  const descriptionInput = () => screen.getByLabelText('Description 1') as HTMLInputElement
+  const vatSelect = () => screen.getByLabelText('VAT rate 1') as HTMLSelectElement
+  const priceInput = () => screen.getByLabelText('Unit price 1') as HTMLInputElement
+
+  it('picking a product locks description and VAT and pre-fills the price', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByDisplayValue('Consulting')
+    await screen.findByRole('option', { name: 'BOOK — Printed handbook' })
+
+    expect(descriptionInput().readOnly).toBe(false)
+    expect(vatSelect().disabled).toBe(false)
+
+    await user.selectOptions(screen.getByLabelText('Product 1'), '3')
+
+    expect(descriptionInput().value).toBe('Printed handbook')
+    expect(descriptionInput().readOnly).toBe(true)
+    expect(vatSelect().value).toBe('zero')
+    expect(vatSelect().disabled).toBe(true)
+    // Pre-filled, and still editable.
+    expect(priceInput().value).toBe('25.0000')
+    expect(priceInput().readOnly).toBe(false)
+
+    // Typing into the locked description changes nothing.
+    await user.type(descriptionInput(), 'x')
+    expect(descriptionInput().value).toBe('Printed handbook')
+  })
+
+  it('switching back to "Custom line" unlocks description and VAT', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByDisplayValue('Consulting')
+    await screen.findByRole('option', { name: 'BOOK — Printed handbook' })
+
+    await user.selectOptions(screen.getByLabelText('Product 1'), '3')
+    expect(descriptionInput().readOnly).toBe(true)
+
+    await user.selectOptions(screen.getByLabelText('Product 1'), '')
+
+    expect(descriptionInput().readOnly).toBe(false)
+    expect(vatSelect().disabled).toBe(false)
+    await user.type(descriptionInput(), ' 2nd ed.')
+    expect(descriptionInput().value).toBe('Printed handbook 2nd ed.')
+    await user.selectOptions(vatSelect(), 'standard')
+    expect(vatSelect().value).toBe('standard')
+  })
+
+  it('offers only active products, filtered by code or description', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByDisplayValue('Consulting')
+    await screen.findByRole('option', { name: 'BOOK — Printed handbook' })
+
+    expect(screen.queryByRole('option', { name: /Discontinued widget/ })).toBeNull()
+
+    await user.type(screen.getByLabelText('Search products 1'), 'cons')
+    expect(screen.queryByRole('option', { name: 'BOOK — Printed handbook' })).toBeNull()
+    expect(screen.getByRole('option', { name: 'CONS-1H — Consulting, per hour' })).toBeTruthy()
+
+    await user.clear(screen.getByLabelText('Search products 1'))
+    await user.type(screen.getByLabelText('Search products 1'), 'handbook')
+    expect(screen.getByRole('option', { name: 'BOOK — Printed handbook' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: /CONS-1H/ })).toBeNull()
+  })
+
+  it('keeps an existing line linked to an archived product, with a badge', async () => {
+    server.use(
+      http.get('/api/v1/invoices/7', () =>
+        HttpResponse.json({
+          ...DRAFT,
+          lines: [
+            {
+              id: 1,
+              position: 1,
+              product_id: 5,
+              description: 'Discontinued widget',
+              quantity: '1.000',
+              unit_price: '3.0000',
+              vat_rate_code: 'reduced',
+            },
+          ],
+        }),
+      ),
+    )
+    renderEditor()
+    await screen.findByDisplayValue('Discontinued widget')
+    await screen.findByText('archived')
+
+    expect((screen.getByLabelText('Product 1') as HTMLSelectElement).value).toBe('5')
+    expect(descriptionInput().readOnly).toBe(true)
+    // Still valid: live totals are requested for it.
+    await waitFor(() => expect(previewCalls).toBeGreaterThan(0), { timeout: 3000 })
   })
 })
 
