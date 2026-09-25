@@ -6,6 +6,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.clients.router import router as clients_router
 from app.modules.company.router import router as company_router
 from app.modules.invoices.router import router as invoices_router
+from app.modules.products.router import router as products_router
 
 
 def create_app() -> FastAPI:
@@ -25,6 +26,7 @@ def create_app() -> FastAPI:
     api.include_router(clients_router)
     api.include_router(company_router)
     api.include_router(invoices_router)
+    api.include_router(products_router)
     app.include_router(api)
 
     return app

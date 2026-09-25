@@ -24,6 +24,9 @@ COMPANY_PROFILE_MISSING = "company_profile_missing"
 EMAIL_TAKEN = "email_taken"
 INVALID_CREDENTIALS = "invalid_credentials"
 NOT_AUTHENTICATED = "not_authenticated"
+PRODUCT_IMMUTABLE = "product_immutable"
+PRODUCT_CODE_TAKEN = "product_code_taken"
+PRODUCT_ARCHIVED = "product_archived"
 
 
 class AppError(Exception):

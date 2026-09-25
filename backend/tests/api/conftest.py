@@ -29,6 +29,7 @@ from app.main import create_app
 _MUTABLE_TABLES = (
     "invoice_line",
     "invoice",
+    "product",
     "client",
     "company_profile",
     "number_sequence",

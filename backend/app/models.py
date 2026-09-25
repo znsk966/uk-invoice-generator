@@ -11,6 +11,7 @@ from app.modules.clients.models import Client
 from app.modules.company.models import CompanyProfile
 from app.modules.invoices.models import Invoice, InvoiceLine
 from app.modules.numbering.models import NumberSequence
+from app.modules.products.models import Product
 from app.modules.vat.models import VatRate
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "Invoice",
     "InvoiceLine",
     "NumberSequence",
+    "Product",
     "User",
     "UserSession",
     "VatRate",
