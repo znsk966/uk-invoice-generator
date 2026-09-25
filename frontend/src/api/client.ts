@@ -31,6 +31,9 @@ export const ERROR_CODES = {
   emailTaken: 'email_taken',
   invalidCredentials: 'invalid_credentials',
   notAuthenticated: 'not_authenticated',
+  productImmutable: 'product_immutable',
+  productCodeTaken: 'product_code_taken',
+  productArchived: 'product_archived',
 } as const
 
 const BASE_URL = '/api/v1'

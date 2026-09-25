@@ -9,6 +9,8 @@ import { ClientsList } from './pages/ClientsList'
 import { InvoiceEditor } from './pages/InvoiceEditor'
 import { InvoicesList } from './pages/InvoicesList'
 import { InvoiceView } from './pages/InvoiceView'
+import { ProductForm } from './pages/ProductForm'
+import { ProductsList } from './pages/ProductsList'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { Settings } from './pages/Settings'
@@ -99,6 +101,9 @@ function AppRoutes() {
         <Route path="/clients" element={<ClientsList />} />
         <Route path="/clients/new" element={<ClientForm />} />
         <Route path="/clients/:id/edit" element={<ClientForm />} />
+        <Route path="/products" element={<ProductsList />} />
+        <Route path="/products/new" element={<ProductForm />} />
+        <Route path="/products/:id/edit" element={<ProductForm />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/invoices" replace />} />
       </Route>

@@ -71,9 +71,46 @@ export interface CompanyProfile {
 
 export type CompanyProfileWrite = Omit<CompanyProfile, 'id' | 'created_at' | 'updated_at'>
 
-/** One editable line. `quantity` and `unit_price` are strings — see the note above. */
+export type ProductKind = 'goods' | 'service'
+
+export const PRODUCT_KINDS: ProductKind[] = ['goods', 'service']
+
+/**
+ * A catalog entry. `code`, `description`, `kind` and `vat_rate_code` are its
+ * identity and can never change after creation; only `unit_price` (the default
+ * price for new lines) is editable.
+ */
+export interface Product {
+  id: number
+  code: string
+  description: string
+  kind: ProductKind
+  vat_rate_code: VatRateCode
+  unit_price: string
+  archived_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type ProductCreate = Pick<
+  Product,
+  'code' | 'description' | 'kind' | 'vat_rate_code' | 'unit_price'
+>
+
+/** The only edit a product accepts. */
+export interface ProductPriceUpdate {
+  unit_price: string
+}
+
+/**
+ * One editable line. `quantity` and `unit_price` are strings — see the note above.
+ *
+ * `product_id` null = an ad-hoc line. When set, the server copies `description`
+ * and `vat_rate_code` from the product and ignores what we send for them.
+ */
 export interface InvoiceLineInput {
   position: number
+  product_id: number | null
   description: string
   quantity: string
   unit_price: string
@@ -99,10 +136,19 @@ export interface InvoiceTotals {
   total_gross: string
 }
 
-/** A line as frozen into the snapshot at issue: inputs plus what was computed. */
-export interface SnapshotLine extends InvoiceLineInput {
+/**
+ * A line as frozen into the snapshot at issue: inputs plus what was computed.
+ *
+ * The product fields arrived in snapshot v2 and are absent from v1 snapshots,
+ * which stay valid forever (never backfilled) — so they are optional, and null
+ * on ad-hoc lines of a v2 snapshot.
+ */
+export interface SnapshotLine extends Omit<InvoiceLineInput, 'product_id'> {
   rate: string
   line_net: string
+  product_id?: number | null
+  product_code?: string | null
+  kind?: ProductKind | null
 }
 
 /**

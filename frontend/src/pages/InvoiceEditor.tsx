@@ -11,7 +11,8 @@ import {
   issueInvoice,
   updateInvoice,
 } from '../api/invoices'
-import type { InvoiceLineInput, InvoiceWrite, VatRateCode } from '../api/types'
+import { listProducts } from '../api/products'
+import type { InvoiceLineInput, InvoiceWrite, Product, VatRateCode } from '../api/types'
 import { VAT_RATE_CODES } from '../api/types'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { ErrorAlert } from '../components/ErrorAlert'
@@ -20,7 +21,10 @@ import { TotalsPanel } from '../components/TotalsPanel'
 import { isValidMoneyInput, isValidQuantityInput } from '../shared/money'
 import { useLiveTotals } from '../shared/useLiveTotals'
 
-const BLANK_LINE: Omit<InvoiceLineInput, 'position'> = {
+type EditorLine = Omit<InvoiceLineInput, 'position'>
+
+const BLANK_LINE: EditorLine = {
+  product_id: null,
   description: '',
   quantity: '1.000',
   unit_price: '0.0000',
@@ -31,7 +35,7 @@ interface DraftState {
   clientId: number | null
   notes: string
   dueDate: string
-  lines: Omit<InvoiceLineInput, 'position'>[]
+  lines: EditorLine[]
 }
 
 const EMPTY: DraftState = { clientId: null, notes: '', dueDate: '', lines: [{ ...BLANK_LINE }] }
@@ -49,6 +53,9 @@ export function InvoiceEditor() {
   const [issuing, setIssuing] = useState(false)
 
   const clients = useQuery({ queryKey: ['clients', false], queryFn: () => listClients(false) })
+  // Archived included: a draft may already link a product archived since, and
+  // that line must still show (with a badge). The picker offers active ones only.
+  const products = useQuery({ queryKey: ['products', true], queryFn: () => listProducts(true) })
 
   const existing = useQuery({
     queryKey: ['invoice', invoiceId],
@@ -62,12 +69,15 @@ export function InvoiceEditor() {
       clientId: existing.data.client_id,
       notes: existing.data.notes ?? '',
       dueDate: existing.data.due_date ?? '',
-      lines: existing.data.lines.map(({ description, quantity, unit_price, vat_rate_code }) => ({
-        description,
-        quantity,
-        unit_price,
-        vat_rate_code,
-      })),
+      lines: existing.data.lines.map(
+        ({ product_id, description, quantity, unit_price, vat_rate_code }) => ({
+          product_id: product_id ?? null,
+          description,
+          quantity,
+          unit_price,
+          vat_rate_code,
+        }),
+      ),
     })
     setDirty(false)
   }, [existing.data])
@@ -93,10 +103,26 @@ export function InvoiceEditor() {
     setDirty(true)
   }
 
-  const updateLine = (index: number, change: Partial<Omit<InvoiceLineInput, 'position'>>) =>
+  const updateLine = (index: number, change: Partial<EditorLine>) =>
     update({
       lines: draft.lines.map((line, at) => (at === index ? { ...line, ...change } : line)),
     })
+
+  // Picking a product copies its identity onto the line (the server does the
+  // same and is authoritative) and pre-fills its current price, which stays
+  // editable. "Custom line" just drops the link; the text stays for editing.
+  const pickProduct = (index: number, product: Product | null) =>
+    updateLine(
+      index,
+      product === null
+        ? { product_id: null }
+        : {
+            product_id: product.id,
+            description: product.description,
+            vat_rate_code: product.vat_rate_code,
+            unit_price: product.unit_price,
+          },
+    )
 
   const save = useMutation({
     mutationFn: (payload: InvoiceWrite) =>
@@ -145,7 +171,9 @@ export function InvoiceEditor() {
         )}
       </div>
 
-      <ErrorAlert error={save.error ?? existing.error ?? remove.error ?? live.error} />
+      <ErrorAlert
+        error={save.error ?? existing.error ?? products.error ?? remove.error ?? live.error}
+      />
 
       <div className="grid grid-cols-3 gap-6">
         <div className="col-span-2">
@@ -189,6 +217,7 @@ export function InvoiceEditor() {
           <table className="mt-6 w-full border-collapse text-sm">
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
+                <th className="w-56 py-2 pr-3 font-medium">Item</th>
                 <th className="py-2 pr-3 font-medium">Description</th>
                 <th className="w-24 py-2 pr-3 font-medium">Qty</th>
                 <th className="w-32 py-2 pr-3 font-medium">Unit price</th>
@@ -197,79 +226,96 @@ export function InvoiceEditor() {
               </tr>
             </thead>
             <tbody>
-              {draft.lines.map((line, index) => (
-                <tr key={index} className="border-b border-gray-100 align-top">
-                  <td className="py-2 pr-3">
-                    <input
-                      type="text"
-                      aria-label={`Description ${index + 1}`}
-                      value={line.description}
-                      onChange={(event) => updateLine(index, { description: event.target.value })}
-                      className="w-full rounded-md border border-gray-300 px-2 py-1.5"
-                    />
-                  </td>
-                  <td className="py-2 pr-3">
-                    {/* type="text" + inputMode, never type="number": a number
-                        input hands back a float-shaped value. */}
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      aria-label={`Quantity ${index + 1}`}
-                      value={line.quantity}
-                      onChange={(event) => updateLine(index, { quantity: event.target.value })}
-                      className={`w-full rounded-md border px-2 py-1.5 text-right tabular-nums ${
-                        isValidQuantityInput(line.quantity)
-                          ? 'border-gray-300'
-                          : 'border-red-400 bg-red-50'
-                      }`}
-                    />
-                  </td>
-                  <td className="py-2 pr-3">
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      aria-label={`Unit price ${index + 1}`}
-                      value={line.unit_price}
-                      onChange={(event) => updateLine(index, { unit_price: event.target.value })}
-                      className={`w-full rounded-md border px-2 py-1.5 text-right tabular-nums ${
-                        isValidMoneyInput(line.unit_price)
-                          ? 'border-gray-300'
-                          : 'border-red-400 bg-red-50'
-                      }`}
-                    />
-                  </td>
-                  <td className="py-2 pr-3">
-                    <select
-                      aria-label={`VAT rate ${index + 1}`}
-                      value={line.vat_rate_code}
-                      onChange={(event) =>
-                        updateLine(index, { vat_rate_code: event.target.value as VatRateCode })
-                      }
-                      className="w-full rounded-md border border-gray-300 px-2 py-1.5 capitalize"
-                    >
-                      {VAT_RATE_CODES.map((code) => (
-                        <option key={code} value={code}>
-                          {code}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="py-2 text-right">
-                    {draft.lines.length > 1 ? (
-                      <button
-                        type="button"
-                        aria-label={`Remove line ${index + 1}`}
-                        onClick={() =>
-                          update({ lines: draft.lines.filter((_, at) => at !== index) })
+              {draft.lines.map((line, index) => {
+                const linked = line.product_id !== null
+                return (
+                  <tr key={index} className="border-b border-gray-100 align-top">
+                    <td className="py-2 pr-3">
+                      <ProductPicker
+                        lineNumber={index + 1}
+                        productId={line.product_id}
+                        products={products.data ?? []}
+                        onPick={(product) => pickProduct(index, product)}
+                      />
+                    </td>
+                    <td className="py-2 pr-3">
+                      {/* Locked on catalog lines: the description is the product's
+                          and cannot differ from it (the server enforces this). */}
+                      <input
+                        type="text"
+                        aria-label={`Description ${index + 1}`}
+                        value={line.description}
+                        readOnly={linked}
+                        title={linked ? LOCKED_HINT : undefined}
+                        onChange={(event) => updateLine(index, { description: event.target.value })}
+                        className={`w-full rounded-md border px-2 py-1.5 ${lockable(linked)}`}
+                      />
+                    </td>
+                    <td className="py-2 pr-3">
+                      {/* type="text" + inputMode, never type="number": a number
+                          input hands back a float-shaped value. */}
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        aria-label={`Quantity ${index + 1}`}
+                        value={line.quantity}
+                        onChange={(event) => updateLine(index, { quantity: event.target.value })}
+                        className={`w-full rounded-md border px-2 py-1.5 text-right tabular-nums ${
+                          isValidQuantityInput(line.quantity)
+                            ? 'border-gray-300'
+                            : 'border-red-400 bg-red-50'
+                        }`}
+                      />
+                    </td>
+                    <td className="py-2 pr-3">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        aria-label={`Unit price ${index + 1}`}
+                        value={line.unit_price}
+                        onChange={(event) => updateLine(index, { unit_price: event.target.value })}
+                        className={`w-full rounded-md border px-2 py-1.5 text-right tabular-nums ${
+                          isValidMoneyInput(line.unit_price)
+                            ? 'border-gray-300'
+                            : 'border-red-400 bg-red-50'
+                        }`}
+                      />
+                    </td>
+                    <td className="py-2 pr-3">
+                      <select
+                        aria-label={`VAT rate ${index + 1}`}
+                        value={line.vat_rate_code}
+                        disabled={linked}
+                        title={linked ? LOCKED_HINT : undefined}
+                        onChange={(event) =>
+                          updateLine(index, { vat_rate_code: event.target.value as VatRateCode })
                         }
-                        className="text-gray-400 hover:text-gray-700"
+                        className={`w-full rounded-md border px-2 py-1.5 capitalize ${lockable(linked)}`}
                       >
-                        ×
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
+                        {VAT_RATE_CODES.map((code) => (
+                          <option key={code} value={code}>
+                            {code}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="py-2 text-right">
+                      {draft.lines.length > 1 ? (
+                        <button
+                          type="button"
+                          aria-label={`Remove line ${index + 1}`}
+                          onClick={() =>
+                            update({ lines: draft.lines.filter((_, at) => at !== index) })
+                          }
+                          className="text-gray-400 hover:text-gray-700"
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
 
@@ -349,6 +395,78 @@ export function InvoiceEditor() {
             navigate(`/invoices/${invoiceId}`)
           }}
         />
+      ) : null}
+    </div>
+  )
+}
+
+const LOCKED_HINT = 'Set by the product — choose "Custom line" to edit'
+
+/** Locked fields read as fixed by the product, not as ordinary inputs. */
+function lockable(locked: boolean): string {
+  return locked
+    ? 'cursor-not-allowed border-dashed border-gray-300 bg-gray-100 text-gray-600'
+    : 'border-gray-300'
+}
+
+interface ProductPickerProps {
+  lineNumber: number
+  productId: number | null
+  /** Every product, archived included — see the note on the editor's query. */
+  products: Product[]
+  onPick: (product: Product | null) => void
+}
+
+/**
+ * Chooses between "Custom line" and a catalog product. Only active products are
+ * offered, filtered by code or description; the product a line already links
+ * stays selectable even if archived since, flagged with a badge, so an old
+ * draft keeps rendering and saving as it was.
+ */
+function ProductPicker({ lineNumber, productId, products, onPick }: ProductPickerProps) {
+  const [search, setSearch] = useState('')
+  const current = products.find((product) => product.id === productId) ?? null
+  const needle = search.trim().toLowerCase()
+
+  const options = products.filter(
+    (product) =>
+      product.id === productId ||
+      (product.archived_at === null &&
+        (needle === '' ||
+          product.code.toLowerCase().includes(needle) ||
+          product.description.toLowerCase().includes(needle))),
+  )
+
+  return (
+    <div className="space-y-1">
+      <input
+        type="search"
+        aria-label={`Search products ${lineNumber}`}
+        placeholder="Search code or description…"
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        className="w-full rounded-md border border-gray-300 px-2 py-1 text-xs"
+      />
+      <select
+        aria-label={`Product ${lineNumber}`}
+        value={productId ?? ''}
+        onChange={(event) => {
+          const value = event.target.value
+          onPick(value === '' ? null : (products.find((p) => `${p.id}` === value) ?? null))
+        }}
+        className="w-full rounded-md border border-gray-300 px-2 py-1.5"
+      >
+        <option value="">Custom line</option>
+        {options.map((product) => (
+          <option key={product.id} value={product.id}>
+            {product.code} — {product.description}
+          </option>
+        ))}
+      </select>
+      {current?.archived_at ? (
+        <span className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+          archived
+        </span>
       ) : null}
     </div>
   )
