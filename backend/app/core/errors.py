@@ -13,7 +13,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-# Machine codes (stable contract with the frontend). Keep in sync with the docs.
+# Machine codes (stable contract with the frontend). Keep in sync with the table
+# in docs/ARCHITECTURE.md.
 NOT_FOUND = "not_found"
 CLIENT_ARCHIVED = "client_archived"
 INVOICE_NOT_DRAFT = "invoice_not_draft"
@@ -33,6 +34,7 @@ class AppError(Exception):
 
 
 def _body(code: str, message: str) -> dict:
+    """The one error body shape, built in one place so it cannot drift."""
     return {"detail": {"code": code, "message": message}}
 
 
