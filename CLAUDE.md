@@ -32,7 +32,18 @@ explicit prompt instructing you to.
 
 7. **Out of scope for the PoC** — never build unless a prompt explicitly says so:
    multi-tenancy, HMRC / Making Tax Digital, e-invoicing, multi-currency, credit
-   notes, real auth.
+   notes. *(Amended in Phase 4: real auth is now in scope — registration, login,
+   session cookies, and per-user ownership exist. Still out of scope: email
+   verification, password reset, OAuth / social login, and roles/permissions.)*
+
+## Ownership
+
+9. **Every domain query is scoped to its owner.** Each user owns their clients,
+   company profile, invoices, and numbering. Every read and write filters by the
+   authenticated owner; a resource belonging to another user is **404
+   `not_found`, never 403** — existence must not leak across owners. Any new
+   domain table gets an `owner_id` (FK to `user`, `ON DELETE RESTRICT`, NOT NULL)
+   from birth. `vat_rate` is the sole exception: it is global reference data.
 
 ## Workflow
 

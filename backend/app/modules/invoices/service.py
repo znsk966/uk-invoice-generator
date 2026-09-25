@@ -61,44 +61,47 @@ _CLIENT_FIELDS = (
     "email",
 )
 
-_COMPANY_SINGLETON_ID = 1
-
 
 # --------------------------------------------------------------------------- #
 # Lookups
 # --------------------------------------------------------------------------- #
-def get_invoice_or_404(session: Session, invoice_id: int, *, for_update: bool = False) -> Invoice:
-    """Load an invoice or raise 404.
+def get_invoice_or_404(
+    session: Session, owner_id: int, invoice_id: int, *, for_update: bool = False
+) -> Invoice:
+    """Load one of ``owner_id``'s invoices or raise 404.
+
+    Scoped to the owner: another user's invoice returns 404 ``not_found``, never
+    403 — existence must not leak across owners.
 
     ``for_update=True`` takes a row lock (``SELECT ... FOR UPDATE``) for the rest
     of the request's transaction. The state transitions use it so two concurrent
     issues (or voids) of the same invoice serialise: the second waits, then sees
     the status the first left behind and is rejected.
     """
+    stmt = select(Invoice).where(Invoice.id == invoice_id, Invoice.owner_id == owner_id)
     if for_update:
-        invoice = session.execute(
-            select(Invoice).where(Invoice.id == invoice_id).with_for_update()
-        ).scalar_one_or_none()
-    else:
-        invoice = session.get(Invoice, invoice_id)
+        stmt = stmt.with_for_update()
+    invoice = session.execute(stmt).scalar_one_or_none()
     if invoice is None:
         raise AppError(404, NOT_FOUND, f"Invoice {invoice_id} not found.")
     return invoice
 
 
-def _require_client(session: Session, client_id: int) -> Client:
-    """Load a client or raise 404. Archived clients pass — issued invoices must
-    stay readable after their client is archived."""
-    client = session.get(Client, client_id)
+def _require_client(session: Session, owner_id: int, client_id: int) -> Client:
+    """Load one of ``owner_id``'s clients or raise 404. Archived clients pass —
+    issued invoices must stay readable after their client is archived."""
+    client = session.scalar(
+        select(Client).where(Client.id == client_id, Client.owner_id == owner_id)
+    )
     if client is None:
         raise AppError(404, NOT_FOUND, f"Client {client_id} not found.")
     return client
 
 
-def _require_active_client(session: Session, client_id: int) -> Client:
+def _require_active_client(session: Session, owner_id: int, client_id: int) -> Client:
     """Like _require_client, but also rejects archived clients (409). Used when
     attaching a client to a draft — you cannot invoice an archived client."""
-    client = _require_client(session, client_id)
+    client = _require_client(session, owner_id, client_id)
     if client.archived_at is not None:
         raise AppError(409, CLIENT_ARCHIVED, "Cannot use an archived client on an invoice.")
     return client
@@ -107,11 +110,12 @@ def _require_active_client(session: Session, client_id: int) -> Client:
 # --------------------------------------------------------------------------- #
 # Draft CRUD
 # --------------------------------------------------------------------------- #
-def create_draft(session: Session, payload) -> Invoice:
-    """Create a draft invoice. Drafts have no number, no fixed dates, no stored
-    money — only the inputs."""
-    _require_active_client(session, payload.client_id)
+def create_draft(session: Session, owner_id: int, payload) -> Invoice:
+    """Create a draft invoice for ``owner_id``. Drafts have no number, no fixed
+    dates, no stored money — only the inputs."""
+    _require_active_client(session, owner_id, payload.client_id)
     invoice = Invoice(
+        owner_id=owner_id,
         status=InvoiceStatus.draft,
         client_id=payload.client_id,
         notes=payload.notes,
@@ -132,17 +136,17 @@ def create_draft(session: Session, payload) -> Invoice:
     return invoice
 
 
-def replace_draft(session: Session, invoice_id: int, payload) -> Invoice:
+def replace_draft(session: Session, owner_id: int, invoice_id: int, payload) -> Invoice:
     """Full replace of a draft's editable fields, including its lines.
 
     Only ``draft`` invoices are editable; anything else is immutable master data
     and returns 409. Lines are replaced wholesale (delete-and-recreate) — fine
     for the PoC; the position-uniqueness invariant is re-validated.
     """
-    invoice = get_invoice_or_404(session, invoice_id)
+    invoice = get_invoice_or_404(session, owner_id, invoice_id)
     if invoice.status != InvoiceStatus.draft:
         raise AppError(409, INVOICE_NOT_DRAFT, "Only draft invoices can be edited.")
-    _require_active_client(session, payload.client_id)
+    _require_active_client(session, owner_id, payload.client_id)
 
     invoice.client_id = payload.client_id
     invoice.notes = payload.notes
@@ -162,10 +166,10 @@ def replace_draft(session: Session, invoice_id: int, payload) -> Invoice:
     return invoice
 
 
-def delete_draft(session: Session, invoice_id: int) -> None:
+def delete_draft(session: Session, owner_id: int, invoice_id: int) -> None:
     """Delete a draft. This is the one legitimate delete in the system: a draft
     is scratch paper, not master data. Issued/void invoices are never deleted."""
-    invoice = get_invoice_or_404(session, invoice_id)
+    invoice = get_invoice_or_404(session, owner_id, invoice_id)
     if invoice.status != InvoiceStatus.draft:
         raise AppError(409, INVOICE_NOT_DRAFT, "Only draft invoices can be deleted.")
     session.delete(invoice)
@@ -293,31 +297,34 @@ def build_snapshot(
 # --------------------------------------------------------------------------- #
 def issue_invoice(
     session: Session,
+    owner_id: int,
     invoice_id: int,
     *,
     invoice_date: date | None = None,
     tax_point_date: date | None = None,
     due_date: date | None = None,
 ) -> Invoice:
-    """Issue a draft invoice. Runs inside the request transaction, in this order:
+    """Issue one of ``owner_id``'s draft invoices. Runs inside the request
+    transaction, in this order:
 
     load FOR UPDATE -> validate -> resolve rates at the tax point -> compute
-    totals -> allocate the gapless number -> write the snapshot and freeze the
-    header. If any step fails, the caller's transaction rolls back and the
-    allocated number is returned to the sequence (never burned).
+    totals -> allocate the gapless number (from the owner's sequence) -> write
+    the snapshot and freeze the header. If any step fails, the caller's
+    transaction rolls back and the allocated number is returned to the sequence
+    (never burned).
     """
-    invoice = get_invoice_or_404(session, invoice_id, for_update=True)
+    invoice = get_invoice_or_404(session, owner_id, invoice_id, for_update=True)
 
     if invoice.status != InvoiceStatus.draft:
         raise AppError(409, INVOICE_NOT_DRAFT, "Only draft invoices can be issued.")
     if not invoice.lines:
         raise AppError(422, VALIDATION_FAILED, "Cannot issue an invoice with no lines.")
 
-    seller = session.get(CompanyProfile, _COMPANY_SINGLETON_ID)
+    seller = session.scalar(select(CompanyProfile).where(CompanyProfile.owner_id == owner_id))
     if seller is None:
         raise AppError(409, COMPANY_PROFILE_MISSING, "Set up the company profile before issuing.")
 
-    client = _require_client(session, invoice.client_id)
+    client = _require_client(session, owner_id, invoice.client_id)
     if client.archived_at is not None:
         raise AppError(409, CLIENT_ARCHIVED, "Cannot issue an invoice for an archived client.")
 
@@ -341,7 +348,7 @@ def issue_invoice(
     ]
     totals = compute_totals(lines, rates)
 
-    seq = allocate_number(session, invoice_sequence_key(resolved_invoice_date.year))
+    seq = allocate_number(session, owner_id, invoice_sequence_key(resolved_invoice_date.year))
     number = format_invoice_number(resolved_invoice_date.year, seq)
 
     invoice.snapshot = build_snapshot(
@@ -366,14 +373,14 @@ def issue_invoice(
     return invoice
 
 
-def void_invoice(session: Session, invoice_id: int) -> Invoice:
-    """Void an issued invoice.
+def void_invoice(session: Session, owner_id: int, invoice_id: int) -> Invoice:
+    """Void one of ``owner_id``'s issued invoices.
 
     Only ``issued`` invoices can be voided. The number and snapshot are left
     untouched: under UK sequential-numbering practice a voided number stays
     consumed (the sequence must have no gaps), so we never reclaim or blank it.
     """
-    invoice = get_invoice_or_404(session, invoice_id, for_update=True)
+    invoice = get_invoice_or_404(session, owner_id, invoice_id, for_update=True)
     if invoice.status != InvoiceStatus.issued:
         raise AppError(409, INVOICE_NOT_ISSUED, "Only issued invoices can be voided.")
     invoice.status = InvoiceStatus.void

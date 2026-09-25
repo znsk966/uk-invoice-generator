@@ -12,11 +12,12 @@ from sqlalchemy.orm import Session
 from app.modules.numbering.models import NumberSequence
 
 
-def allocate_number(session: Session, key: str) -> int:
-    """Allocate and return the next integer for ``key``, gaplessly.
+def allocate_number(session: Session, owner_id: int, key: str) -> int:
+    """Allocate and return the next integer for ``(owner_id, key)``, gaplessly.
 
     Locks the ``number_sequence`` row with ``SELECT ... FOR UPDATE`` (creating
     it on first use), returns its current ``next_value``, and increments it.
+    The sequence is per owner: each user's numbering advances independently.
 
     **Transaction contract:** this MUST run inside the caller's transaction and
     the caller MUST NOT commit until the allocated number is safely persisted
@@ -35,12 +36,14 @@ def allocate_number(session: Session, key: str) -> int:
     # upsert that does nothing if another transaction already created it.
     session.execute(
         pg_insert(NumberSequence)
-        .values(key=key, next_value=1)
-        .on_conflict_do_nothing(index_elements=[NumberSequence.key])
+        .values(owner_id=owner_id, key=key, next_value=1)
+        .on_conflict_do_nothing(index_elements=[NumberSequence.owner_id, NumberSequence.key])
     )
 
     row = session.execute(
-        select(NumberSequence).where(NumberSequence.key == key).with_for_update()
+        select(NumberSequence)
+        .where(NumberSequence.owner_id == owner_id, NumberSequence.key == key)
+        .with_for_update()
     ).scalar_one()
 
     value = row.next_value

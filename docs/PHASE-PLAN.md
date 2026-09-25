@@ -30,10 +30,17 @@ Carried over from mk-erp — these rules exist because they prevent real bugs:
 | 1 — Domain & database | PROMPT-02 | **Done** | [#2](https://github.com/znsk966/uk-invoice-generator/pull/2) |
 | 2 — API | PROMPT-03 | **Done** | [#3](https://github.com/znsk966/uk-invoice-generator/pull/3) |
 | 3 — Frontend | PROMPT-04 | **Done** | [#5](https://github.com/znsk966/uk-invoice-generator/pull/5) |
-| 4 — PDF & polish | PROMPT-05 | Not started | — |
+| 4 — Auth & per-user ownership | PROMPT-05 | **Done** | — |
+| 5 — Products / catalog | PROMPT-06 | Not started | — |
+| 6 — PDF & polish | PROMPT-07 | Not started | — |
 
 A documentation pass (PROMPT-04A, [#4](https://github.com/znsk966/uk-invoice-generator/pull/4))
 landed between Phases 2 and 3 — it added the `docs/` set and this table.
+
+**Roadmap renumbered in Phase 4.** PROMPT-05 turned out to be auth & per-user
+ownership (it amended Project Law rule 7 to bring real auth in scope and added
+rule 9, the ownership law). PDF generation — originally slated as Phase 4 — moves
+to Phase 6, with a products/catalog phase (PROMPT-06) now explicit at Phase 5.
 
 ### Reviewed deviations from the original plan
 
@@ -99,7 +106,26 @@ it. Tested with Vitest + Testing Library + MSW.
 
 **Done when:** a person can create a client, build an invoice, issue it, and see it locked — all through the UI.
 
-## Phase 4 — PDF & Polish  *(PROMPT-05)* — **not started**
+## Phase 4 — Auth & Per-User Ownership  *(PROMPT-05)* — **done**
+
+- Registration, login, logout (argon2id passwords; opaque session token stored only as its SHA-256 hash; HTTP-only `session` cookie, Secure outside dev)
+- `current_user` dependency guards every domain endpoint; only `/health` and `/auth/*` are open
+- Per-user ownership: `owner_id` on company_profile, client, invoice, number_sequence; company profile is a per-user singleton; invoice numbers unique per owner; numbering keyed `(owner_id, key)`
+- Cross-owner access is invisible: 404 `not_found`, never 403
+- Frontend: `/login` + `/register`, a route guard, sidebar footer with email + Logout; the shared fetch wrapper sends the cookie and redirects to `/login` on any 401
+
+Amended Project Law: rule 7 (real auth now in scope) and new rule 9 (the ownership law). Out of scope still: email verification, password reset, OAuth, roles.
+
+**Done when:** register → build and issue an invoice → logout → login as a second user → empty app, own profile, own `INV-2026-00001`.
+
+## Phase 5 — Products / Catalog  *(PROMPT-06)* — **not started**
+
+- Reusable product/service catalog (owner-scoped from birth — CLAUDE.md rule 9): name, default unit price, default VAT rate code; archive, never delete
+- Invoice lines can be filled from a catalog item (copying its values, not linking — issued invoices stay immutable snapshots)
+
+**Done when:** a user can keep a catalog and build invoice lines from it.
+
+## Phase 6 — PDF & Polish  *(PROMPT-07)* — **not started**
 
 - WeasyPrint invoice PDF meeting UK legal content requirements: unique sequential number, invoice date + tax point, seller name/address/VAT number, client details, per-line description/qty/unit price, per-rate VAT breakdown, totals ex-VAT / VAT / gross
 - Download from UI; PDF rendered from the immutable snapshot, never live data
@@ -112,4 +138,4 @@ it. Tested with Vitest + Testing Library + MSW.
 
 ## Stretch (post-PoC, only if it earns it)
 
-Single-user auth, invoice email delivery, credit notes, CSV export, hosted demo.
+Invoice email delivery, credit notes, CSV export, hosted demo.

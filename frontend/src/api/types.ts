@@ -9,6 +9,21 @@
  * codebase, so there is nothing to accidentally do arithmetic on.
  */
 
+export interface User {
+  id: number
+  email: string
+}
+
+export interface RegisterRequest {
+  email: string
+  password: string
+}
+
+export interface LoginRequest {
+  email: string
+  password: string
+}
+
 export type VatRateCode = 'standard' | 'reduced' | 'zero' | 'exempt'
 
 export const VAT_RATE_CODES: VatRateCode[] = ['standard', 'reduced', 'zero', 'exempt']

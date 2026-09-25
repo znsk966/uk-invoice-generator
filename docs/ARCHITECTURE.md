@@ -1,8 +1,8 @@
 # Architecture
 
-How the backend is put together, and why. Current as of Phase 3 (the backend is
-feature-complete and there is a working React frontend — see
-[PHASE-PLAN.md](PHASE-PLAN.md)). This document covers the backend; the frontend's
+How the backend is put together, and why. Current as of Phase 4 (auth &
+per-user ownership; the backend is feature-complete and there is a working React
+frontend — see [PHASE-PLAN.md](PHASE-PLAN.md)). This document covers the backend; the frontend's
 one hard rule is that it never does money arithmetic — it renders server-computed
 values and asks the server to recompute on every edit (see
 [MONEY.md](MONEY.md)).
@@ -54,7 +54,12 @@ orchestrate but delegate every calculation to core.
 
 | File | Responsibility |
 | --- | --- |
-| `clients/models.py` | `Client` — master data with `archived_at` (archive, never delete). |
+| `auth/models.py` | `User` (email + argon2 hash) and `UserSession` (PK = SHA-256 of the cookie token). |
+| `auth/security.py` | Password hashing (argon2id) and session-token primitives (random token, SHA-256, expiry). |
+| `auth/service.py` | Register / login / logout and session lookup. Uniform 401 on any credential failure. |
+| `auth/deps.py` | `current_user` dependency and the session-cookie contract (HTTP-only, SameSite=Lax, Secure outside dev). |
+| `auth/router.py` | `/auth` register / login / logout / me — the only endpoints that don't require auth. |
+| `clients/models.py` | `Client` — master data with `archived_at` (archive, never delete); `owner_id` FK. |
 | `clients/schemas.py` | Client request/response schemas. |
 | `clients/router.py` | `/clients` CRUD plus `/archive` and `/unarchive`. |
 | `company/models.py` | `CompanyProfile` — the seller; a single row with `id = 1`, enforced by CHECK. |
@@ -139,22 +144,57 @@ validation failures are collapsed into the same shape with code
 
 | Code | Status | Raised when |
 | --- | --- | --- |
-| `not_found` | 404 | The invoice, client, or company profile does not exist. |
+| `not_found` | 404 | The invoice, client, or company profile does not exist **for this owner** (another user's resource looks identical to a missing one). |
 | `client_archived` | 409 | Creating/editing an invoice for an archived client, or issuing one. |
 | `invoice_not_draft` | 409 | Editing, deleting, or issuing an invoice that is not a draft. |
 | `invoice_not_issued` | 409 | Voiding an invoice that is not in `issued`. |
 | `validation_failed` | 422 | Request body validation, no lines at issue, or no VAT rate at the tax point. |
-| `company_profile_missing` | 409 | Issuing before the seller's company profile has been saved. |
+| `company_profile_missing` | 409/404 | Issuing before the seller's company profile has been saved (409); reading a not-yet-created profile (404). |
+| `email_taken` | 409 | Registering an email that already exists. |
+| `invalid_credentials` | 401 | Login with a wrong password **or** an unknown email — deliberately identical, so neither is revealed. |
+| `not_authenticated` | 401 | No valid session cookie on a protected endpoint. |
 
 The codes are defined once in `app/core/errors.py`; this table mirrors them.
 
+## Authentication & ownership
+
+Added in Phase 4. The app is multi-user: each user owns their clients, company
+profile, invoices, and invoice numbering.
+
+**Sessions, not tokens-in-JS.** Login and registration mint a
+`secrets.token_urlsafe(32)` token and set it as a cookie: `session`, HTTP-only,
+`SameSite=Lax`, `Secure` outside dev (the `COOKIE_SECURE` flag), path `/`. Only
+the token's **SHA-256 hash** is stored (`user_session.token_hash`), so a database
+leak holds nothing replayable, and the token never touches JavaScript. Passwords
+are hashed with **argon2id** (`argon2-cffi`, library defaults).
+
+The `current_user` dependency reads the cookie, hashes it, looks up an unexpired
+`user_session`, and loads the `User`; anything missing is a uniform 401
+`not_authenticated`. Every domain router depends on it; only `/health` and
+`/api/v1/auth/*` are open. Logout **deletes the session row** — real server-side
+revocation, not just clearing the cookie — and is idempotent.
+
+**Ownership is enforced in the service/router layer.** Every domain query filters
+by `owner_id`; a resource owned by another user returns **404 `not_found`, never
+403**, so existence never leaks across accounts (CLAUDE.md rule 9). Numbering is
+per owner: `number_sequence` is keyed `(owner_id, key)` and
+`allocate_number(session, owner_id, key)` advances each user's sequence
+independently, so two users legitimately both hold `INV-2026-00001`. The snapshot
+shape is unchanged — it carries no owner data beyond the seller/client copies it
+always held.
+
+**Deliberately out of scope** (self-hosted single-user PoC): email verification,
+password reset, OAuth, roles/permissions, and rate limiting. A public deployment
+must put a reverse-proxy rate limit in front of `/auth`.
+
 ## Migrations and triggers
 
-Three migrations, applied in order:
+Four migrations, applied in order:
 
 1. `5f7da3d0e4dd` — schema: company profile, clients, VAT rates, invoices, numbering.
 2. `de303147f0cb` — seed: the four UK VAT rates, effective 2011-01-04, open-ended.
 3. `14438b1216ca` — the immutability triggers.
+4. `57924f8aade2` — auth (`user`, `user_session`) and per-user ownership (`owner_id` on the domain tables). **Aborts if any user-owned domain table already has rows** — pre-1.0 has no data-migration path; recreate the database instead.
 
 **Postgres ENUMs need explicit lifecycle management in Alembic.** Autogenerate
 renders `sa.Enum(...)` inline per table; `upgrade` then works, but `downgrade`

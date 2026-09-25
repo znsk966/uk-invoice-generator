@@ -22,5 +22,10 @@ class Settings(BaseSettings):
         "postgresql+psycopg://uk_invoice_user:CHANGE_ME@localhost:5432/uk_invoice_db"
     )
 
+    # Set the session cookie's Secure flag. Off in local dev (plain HTTP on
+    # localhost); a real deployment serves over HTTPS and MUST set
+    # COOKIE_SECURE=true so the session cookie is never sent in the clear.
+    cookie_secure: bool = False
+
 
 settings = Settings()
