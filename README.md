@@ -4,9 +4,9 @@ An open-source **proof-of-concept invoice generator for the UK market**: draft a
 invoice, let the server compute the VAT, issue it against a gapless number, and
 keep the issued document immutable forever after.
 
-> **Status: Phase 4 complete — multi-user, with the full invoice lifecycle end
-> to end.** Register an account, then create a client, build a draft with live
-> server-computed totals, issue it, and see it locked — all scoped to your own
+> **Status: Phase 5 complete — multi-user, with a product catalog and the full
+> invoice lifecycle end to end.** Register an account, then create a client and
+> some products, build a draft from them with live server-computed totals, issue it, and see it locked — all scoped to your own
 > account. Each user has their own clients, profile, invoices, and numbering.
 > PDF generation is Phase 6. See the [phase plan](docs/PHASE-PLAN.md).
 
@@ -16,8 +16,14 @@ keep the issued document immutable forever after.
   invoices keep valid references.
 - **Company profile** — the seller's details, including bank details, as a
   single record.
-- **Invoice drafts** — lines with quantity, unit price, and VAT rate code.
-  Drafts store inputs only: no number, no stored money.
+- **Product & service catalog** — a per-user catalog of goods and services
+  (code, description, kind, VAT rate, default price). A product's identity is
+  immutable — to change it, archive and create a new one; only its price is
+  editable. Archived, never deleted.
+- **Invoice drafts** — lines with quantity, unit price, and VAT rate code, either
+  picked from the catalog (description and VAT locked to the product, price
+  pre-filled but editable) or typed as a custom line. Drafts store inputs only:
+  no number, no stored money.
 - **Server-computed VAT** — `Decimal` throughout, `ROUND_HALF_UP`, rounded **per
   rate group** rather than per line. Money crosses JSON as strings, never as
   floats.

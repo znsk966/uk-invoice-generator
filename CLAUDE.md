@@ -22,8 +22,12 @@ explicit prompt instructing you to.
 
 ## Master data
 
-5. **Archive, never delete.** Master data (clients, items) is archived, never
-   hard-deleted, so issued invoices keep valid references.
+5. **Archive, never delete.** Master data (clients, products) is archived,
+   never hard-deleted, so issued invoices keep valid references. *(Amended in
+   Phase 5:)* a product's **identity** — `code`, `description`, `kind`,
+   `vat_rate_code` — is immutable once created; to change any of it, archive
+   the product and create a new one. Only its `unit_price` (the default for new
+   lines) is editable, and changing it never touches existing lines.
 6. **VAT rates are effective-dated reference data.** UK VAT rates (standard 20%,
    reduced 5%, zero 0%, exempt) are effective-dated reference data — never
    hardcoded in business logic.

@@ -1,13 +1,13 @@
 # Testing
 
-54 tests in three tiers. The tier a test belongs to is decided by what it needs,
+131 tests in three tiers. The tier a test belongs to is decided by what it needs,
 not by what it is about.
 
 | Tier | Path | Count | Needs a database | Covers |
 | --- | --- | --- | --- | --- |
 | Unit | `tests/unit/` | 23 | no | Money primitives, the VAT engine, number formatting, the model float guards. |
-| DB | `tests/db/` | 8 | yes | Effective-dated rate lookup, gapless allocation, row locking. |
-| API | `tests/api/` | 21 | yes | The full HTTP lifecycle, error codes, snapshots, the immutability triggers. |
+| DB | `tests/db/` | 9 | yes | Effective-dated rate lookup, gapless allocation, row locking. |
+| API | `tests/api/` | 97 | yes | The full HTTP lifecycle, auth and cross-owner isolation, the product catalog, error codes, snapshots, and every trigger probed through raw SQL. |
 | — | `tests/test_health.py` | 2 | no | `/health`, including the database-unavailable path. |
 
 Run everything:
@@ -60,9 +60,10 @@ and reports the rest as skipped. In CI both variables point at the disposable
 ## Two isolation strategies, one database
 
 The schema is built once per session in `backend/tests/conftest.py`: tables from
-the models' metadata, plus the immutability triggers — imported from
-`app.modules.invoices.immutability`, the same constant the Alembic migration
-executes, so the tests exercise the DDL that production actually runs.
+the models' metadata, plus the invoice immutability and catalog integrity
+triggers — imported from `app.modules.invoices.immutability` and
+`app.modules.products.integrity`, the same constants the Alembic migrations
+execute, so the tests exercise the DDL that production actually runs.
 
 Isolation then differs by tier, because the tiers need opposite things.
 

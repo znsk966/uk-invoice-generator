@@ -30,8 +30,8 @@ Carried over from mk-erp — these rules exist because they prevent real bugs:
 | 1 — Domain & database | PROMPT-02 | **Done** | [#2](https://github.com/znsk966/uk-invoice-generator/pull/2) |
 | 2 — API | PROMPT-03 | **Done** | [#3](https://github.com/znsk966/uk-invoice-generator/pull/3) |
 | 3 — Frontend | PROMPT-04 | **Done** | [#5](https://github.com/znsk966/uk-invoice-generator/pull/5) |
-| 4 — Auth & per-user ownership | PROMPT-05 | **Done** | — |
-| 5 — Products / catalog | PROMPT-06 | Not started | — |
+| 4 — Auth & per-user ownership | PROMPT-05 | **Done** | [#8](https://github.com/znsk966/uk-invoice-generator/pull/8) |
+| 5 — Products / catalog | PROMPT-06 | **Done** | — |
 | 6 — PDF & polish | PROMPT-07 | Not started | — |
 
 A documentation pass (PROMPT-04A, [#4](https://github.com/znsk966/uk-invoice-generator/pull/4))
@@ -118,10 +118,16 @@ Amended Project Law: rule 7 (real auth now in scope) and new rule 9 (the ownersh
 
 **Done when:** register → build and issue an invoice → logout → login as a second user → empty app, own profile, own `INV-2026-00001`.
 
-## Phase 5 — Products / Catalog  *(PROMPT-06)* — **not started**
+## Phase 5 — Products / Catalog  *(PROMPT-06)* — **done**
 
-- Reusable product/service catalog (owner-scoped from birth — CLAUDE.md rule 9): name, default unit price, default VAT rate code; archive, never delete
-- Invoice lines can be filled from a catalog item (copying its values, not linking — issued invoices stay immutable snapshots)
+- Per-user product & service catalog (owner-scoped from birth — CLAUDE.md rule 9): code, description, kind (goods/service), VAT rate code, default unit price; archive, never delete
+- **Product identity is immutable** (code, description, kind, VAT rate); only the price is editable. Amended Project Law rule 5
+- Invoice lines optionally **link** a product (`invoice_line.product_id`); the server copies description and VAT from it, and a DB trigger enforces that they match. Ad-hoc lines still work; an invoice can mix both
+- Snapshot v2: lines carry `product_id`, `product_code`, `kind` (v1 snapshots stay valid)
+- Frontend: `/products` page, price-only edit form, per-line product picker that locks description and VAT
+- Phase 4 review fixes: concurrent registration → 409 (never 500); login verifies a dummy hash for unknown emails
+
+Deviation from the original bullet above: lines *link* to catalog items rather than only copying values. Safe because identity is immutable and issued invoices still render from their snapshot.
 
 **Done when:** a user can keep a catalog and build invoice lines from it.
 

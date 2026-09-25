@@ -90,7 +90,7 @@ invoice's money straight from the snapshot; it is never recomputed.
 `GET /invoices/{id}/totals` follows the same rule — it computes live only for a
 **draft**, and for an issued or void invoice it hands back the snapshot's totals
 unchanged (`totals_from_snapshot`), so a VAT rate change after issue can never
-alter what an issued document reports. Phase 4's PDF will render from this
+alter what an issued document reports. The Phase 6 PDF will render from this
 structure and nothing else.
 
 > Drafts have no snapshot, so their totals must be computed on demand — from the
@@ -167,7 +167,7 @@ A real snapshot, captured from a running instance (demo data, nothing redacted):
 
 | Field | Notes |
 | --- | --- |
-| `version` | Snapshot shape version. Currently `1`. |
+| `version` | Snapshot shape version. Currently `2` (see [v2](#shape-v2) below); `1` snapshots remain valid. |
 | `number` | The allocated invoice number, also mirrored on the `invoice.number` column. |
 | `invoice_date` | Date of issue. Defaults to today; may be supplied in the issue request. |
 | `tax_point_date` | Governs which VAT rates were used. Defaults to `invoice_date`. |
@@ -175,7 +175,7 @@ A real snapshot, captured from a running instance (demo data, nothing redacted):
 | `currency` | `GBP` only (a CHECK constraint enforces it). |
 | `seller` | Copy of the company profile — 13 fields including bank details. |
 | `client` | Copy of the client — 8 fields. |
-| `lines` | Per line: `position`, `description`, `quantity`, `unit_price`, `vat_rate_code`, the resolved `rate`, and the computed `line_net`. |
+| `lines` | Per line: `position`, `description`, `quantity`, `unit_price`, `vat_rate_code`, the resolved `rate`, and the computed `line_net`. v2 adds `product_id`, `product_code`, `kind`. |
 | `groups` | Per rate group in canonical order: `code`, `rate`, `net`, `vat`, `gross`. |
 | `totals` | Invoice-level `net`, `vat`, `gross`. |
 
@@ -184,6 +184,28 @@ floats in most parsers, and floats are banned from money — see
 [MONEY.md](MONEY.md#three-enforcement-layers). A database-level test asserts
 `jsonb_typeof(snapshot->'totals'->'net') = 'string'`, so this cannot regress
 into numbers unnoticed.
+
+### Shape v2
+
+Phase 5 (the product catalog) bumped `SNAPSHOT_VERSION` to `2`. Each line gains
+three fields recording its catalog provenance:
+
+| Line field | Catalog line | Ad-hoc line |
+| --- | --- | --- |
+| `product_id` | The linked product's id | `null` |
+| `product_code` | The product's code, e.g. `"BOOK"` | `null` |
+| `kind` | `"goods"` or `"service"` | `null` |
+
+Everything else is unchanged. **v1 compatibility:** snapshots issued before
+Phase 5 stay exactly as written (`"version": 1`, no product fields) and are
+never backfilled. Every reader — the read-only view today, the PDF in Phase 6 —
+must treat the three fields as optional and render a line without them. The
+frontend types mark them optional (`product_code?: string | null`), and a test
+renders a v1 and a v2 snapshot side by side.
+
+The change is additive, so the policy below did not strictly demand a bump; it
+was bumped anyway so a reader can tell "no product" (`null` on v2) from "shape
+predates products" (field absent on v1).
 
 ### Version-bump policy
 
@@ -251,10 +273,83 @@ keep a valid reference. The API has no delete endpoint for clients at all.
   snapshot, which holds the client's details as they were.
 - `POST /clients/{id}/unarchive` reverses it.
 
+## Product catalog
+
+Each user keeps a catalog of products and services (`product`, owner-scoped
+like every domain table — CLAUDE.md rule 9). An invoice line may link one
+(`invoice_line.product_id`) or stay ad-hoc (`product_id` null); one invoice can
+mix both.
+
+### Identity is immutable; price is not
+
+A product's **identity** — `code`, `description`, `kind`, `vat_rate_code` — is
+fixed at creation (CLAUDE.md rule 5). To change any of it, archive the product
+and create a new one. Only `unit_price` can be edited, and it is merely the
+default pre-filled onto *new* lines.
+
+- `PATCH /products/{id}` accepts only `unit_price`. Naming an identity field →
+  `409 product_immutable` ("… archive this product and create a new one").
+  Any other unknown field, or an invalid price → `422 validation_failed`.
+- There is no DELETE route: `POST /products/{id}/archive` / `unarchive`.
+- `code` is unique per owner (`uq_product_owner_code`) → `409 product_code_taken`,
+  including under concurrent creates (savepoint + constraint, never a 500).
+
+### Linked lines
+
+Because identity never changes, a linked line can safely carry *copies* of the
+product's `description` and `vat_rate_code` in its own columns — they can never
+drift apart. That keeps `vat.py`, the totals paths, and the snapshot unchanged.
+
+On `POST /invoices`, `PUT /invoices/{id}` and `POST /invoices/preview-totals`,
+for each line with a `product_id`:
+
+1. The product is loaded **for the current owner** — anyone else's is `404`.
+2. **The server is authoritative** for `description` and `vat_rate_code`: they are
+   copied from the product and whatever the client sent is ignored.
+3. `unit_price` is the client's (the editor pre-fills it from the product); if
+   omitted, the product's current price.
+4. An archived product is `409 product_archived` — but only when it is *newly*
+   added. Re-saving a draft whose line already linked it (archived since) is
+   fine. `preview-totals` never rejects archived products: it is stateless and
+   cannot tell new from existing, and the editor must keep showing totals for
+   such a draft.
+
+Ad-hoc lines must supply `description`, `vat_rate_code` and `unit_price`
+(`422 validation_failed` otherwise).
+
+**Price independence.** Changing a product's price never touches existing
+lines: each line stores its own `unit_price`, drafts total from it, and issue
+freezes it into the snapshot.
+
+### Catalog triggers
+
+DDL in `app/modules/products/integrity.py`, shared between the migration and
+the test harness exactly like the invoice triggers.
+
+| Trigger | Fires on | Blocks |
+| --- | --- | --- |
+| `trg_product_identity` | `BEFORE UPDATE ON product` | Any change to `code`, `description`, `kind`, `vat_rate_code`, `owner_id` (or `id`, `created_at`). `unit_price`, `archived_at`, `updated_at` may change. |
+| `trg_product_no_delete` | `BEFORE DELETE ON product` | Every delete. The FK (`ON DELETE RESTRICT`) already protects referenced products; this covers unreferenced ones. |
+| `trg_invoice_line_product_link` | `BEFORE INSERT OR UPDATE ON invoice_line`, `WHEN (NEW.product_id IS NOT NULL)` | A linked line whose product belongs to a different owner than its invoice, or whose `description` / `vat_rate_code` differ from the product's. |
+
+**Firing order.** Postgres runs same-event triggers alphabetically by name, so
+on `invoice_line` `trg_invoice_line_immutable` fires before
+`trg_invoice_line_product_link`: a write to a line of an issued invoice is
+refused by the immutability guard first. Both raise, so order changes only the
+message; a test pins it.
+
+```
+$ psql -c "UPDATE product SET description='hacked' WHERE id=1;"
+ERROR:  product 1 identity is immutable: only unit_price and archived_at may change (archive this product and create a new one)
+
+$ psql -c "INSERT INTO invoice_line (invoice_id, position, product_id, description, quantity, unit_price, vat_rate_code) VALUES (2, 9, 1, 'Tampered', 1, 1, 'standard');"
+ERROR:  invoice_line description must equal product 1 description
+```
+
 ## UK invoice content requirements
 
 A UK VAT invoice must carry specific information. Every item below is already
-captured in the snapshot, which is what the Phase 4 PDF will render:
+captured in the snapshot, which is what the Phase 6 PDF will render:
 
 | Requirement | Where it lives |
 | --- | --- |
