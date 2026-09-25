@@ -86,8 +86,19 @@ changes — cannot alter an issued invoice, because nothing about it is read fro
 master data again.
 
 **Write once, read verbatim.** `GET /invoices/{id}` serves an issued or void
-invoice's money straight from the snapshot; it is never recomputed. Phase 4's
-PDF will render from this structure and nothing else.
+invoice's money straight from the snapshot; it is never recomputed.
+`GET /invoices/{id}/totals` follows the same rule — it computes live only for a
+**draft**, and for an issued or void invoice it hands back the snapshot's totals
+unchanged (`totals_from_snapshot`), so a VAT rate change after issue can never
+alter what an issued document reports. Phase 4's PDF will render from this
+structure and nothing else.
+
+> Drafts have no snapshot, so their totals must be computed on demand — from the
+> current lines at today's rates. The editor works on **unsaved** edits and posts
+> them to the stateless `POST /invoices/preview-totals`, which computes with the
+> same VAT engine but persists nothing. The rule underneath both: the server
+> computes money, the client only displays it — see
+> [ARCHITECTURE.md](ARCHITECTURE.md#two-ways-to-get-totals).
 
 ### Shape v1
 

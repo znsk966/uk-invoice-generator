@@ -29,8 +29,11 @@ Carried over from mk-erp — these rules exist because they prevent real bugs:
 | 0 — Scaffold & OSS hygiene | PROMPT-01 | **Done** | [#1](https://github.com/znsk966/uk-invoice-generator/pull/1) |
 | 1 — Domain & database | PROMPT-02 | **Done** | [#2](https://github.com/znsk966/uk-invoice-generator/pull/2) |
 | 2 — API | PROMPT-03 | **Done** | [#3](https://github.com/znsk966/uk-invoice-generator/pull/3) |
-| 3 — Frontend | PROMPT-04 | Not started (scaffold only) | — |
+| 3 — Frontend | PROMPT-04 | **Done** | [#5](https://github.com/znsk966/uk-invoice-generator/pull/5) |
 | 4 — PDF & polish | PROMPT-05 | Not started | — |
+
+A documentation pass (PROMPT-04A, [#4](https://github.com/znsk966/uk-invoice-generator/pull/4))
+landed between Phases 2 and 3 — it added the `docs/` set and this table.
 
 ### Reviewed deviations from the original plan
 
@@ -83,12 +86,16 @@ Things the phases did differently from this document, each accepted in review:
 
 **Done when:** full invoice lifecycle works via OpenAPI docs UI; immutability tests pass.
 
-## Phase 3 — Frontend  *(PROMPT-04)* — **not started**
+## Phase 3 — Frontend  *(PROMPT-04)* — **done**
 
 - Client list + form (archive, not delete)
-- Invoice editor: line items, VAT rate picker, totals rendered from server response (debounced compute call)
-- Issue flow with confirmation; issued invoices render read-only
+- Invoice editor: line items, VAT rate picker, totals rendered from server response (debounced compute call via `POST /invoices/preview-totals`)
+- Issue flow with confirmation; issued invoices render read-only from the snapshot
 - Company profile settings page
+
+Built with React Router, TanStack Query, and Tailwind v4; every money/quantity/rate
+value is carried as a string end to end, and the client never does arithmetic on
+it. Tested with Vitest + Testing Library + MSW.
 
 **Done when:** a person can create a client, build an invoice, issue it, and see it locked — all through the UI.
 
