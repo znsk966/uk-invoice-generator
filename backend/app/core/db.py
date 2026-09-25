@@ -1,3 +1,10 @@
+"""Database engine, session lifecycle, and the declarative base.
+
+The transaction model lives here: ``get_session`` opens exactly one transaction
+per request and is the only place anything commits. See
+``docs/ARCHITECTURE.md``.
+"""
+
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine, text

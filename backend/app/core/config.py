@@ -1,3 +1,10 @@
+"""Application configuration.
+
+A single ``Settings`` instance, read once at import from the environment and an
+optional ``backend/.env``. Nothing else in the app reads ``os.environ`` for
+configuration.
+"""
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
