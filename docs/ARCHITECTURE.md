@@ -1,14 +1,17 @@
 # Architecture
 
-How the backend is put together, and why. Current as of Phase 2 (the backend is
-feature-complete; the frontend is a scaffold only — see
-[PHASE-PLAN.md](PHASE-PLAN.md)).
+How the backend is put together, and why. Current as of Phase 3 (the backend is
+feature-complete and there is a working React frontend — see
+[PHASE-PLAN.md](PHASE-PLAN.md)). This document covers the backend; the frontend's
+one hard rule is that it never does money arithmetic — it renders server-computed
+values and asks the server to recompute on every edit (see
+[MONEY.md](MONEY.md)).
 
 ## Layers
 
 ```mermaid
 flowchart TD
-    HTTP["HTTP client<br/>(curl, /docs, future frontend)"]
+    HTTP["HTTP client<br/>(curl, /docs, the React frontend)"]
     Router["Routers — app/modules/*/router.py<br/>HTTP shape, Pydantic schemas, no logic"]
     Service["Service — app/modules/invoices/service.py<br/>domain rules, AppError, never commits"]
     Core["Core — app/core/<br/>money · vat · numbering · errors · db"]
@@ -59,14 +62,33 @@ orchestrate but delegate every calculation to core.
 | `company/router.py` | `GET` / `PUT /company-profile`. |
 | `invoices/models.py` | `Invoice` and `InvoiceLine` — inputs only, no computed money columns; JSONB `snapshot`; partial unique index on `number`. |
 | `invoices/schemas.py` | Invoice schemas; every money field is `Decimal` with `allow_inf_nan=False`. |
-| `invoices/service.py` | Draft CRUD, totals, and the money-critical `issue_invoice` / `void_invoice`. |
+| `invoices/service.py` | Draft CRUD, totals (`compute_invoice_totals`, `totals_from_snapshot`), and the money-critical `issue_invoice` / `void_invoice`. |
 | `invoices/immutability.py` | The trigger DDL, as a single shared constant (see below). |
-| `invoices/router.py` | `/invoices` CRUD plus `/totals`, `/issue`, `/void`. |
+| `invoices/router.py` | `/invoices` CRUD plus `/totals`, `/preview-totals`, `/issue`, `/void`. |
 | `numbering/models.py` | `NumberSequence` — the persistent per-year counter. |
 | `vat/models.py` | `VatRate` — effective-dated reference data; owns the shared `vat_rate_code` Postgres enum. |
 | `vat/repository.py` | `rates_on(session, date)` — the applicable rate for every code on a date. |
 | `models.py` | Model registry: importing it populates `Base.metadata` for Alembic and the test harness. |
 | `main.py` | `create_app()` — mounts `/health` and the routers under `/api/v1`. |
+
+## Two ways to get totals
+
+Money is always computed on the server; there are two endpoints for it because a
+saved invoice and an in-progress edit are different situations.
+
+| Endpoint | Reads DB | Persists | Used for |
+| --- | --- | --- | --- |
+| `GET /invoices/{id}/totals` | yes | no | A saved invoice. **Draft:** computed live from its lines at today's rates. **Issued / void:** returned from the snapshot verbatim (`totals_from_snapshot`), never recomputed — same source as `GET /invoices/{id}`. |
+| `POST /invoices/preview-totals` | rates only | no | Unsaved editor edits. Lines are posted in the body; nothing is created or read except the VAT rates. Lets the draft editor show live totals without autosaving on every keystroke. |
+
+Both run the one VAT engine in `app/core/vat.py`, so a preview and the eventual
+issued snapshot agree to the penny. `preview-totals` resolves rates at
+`on_date` (default today) and returns `422 validation_failed` if no rate is
+effective then — the same error surface as issuing before the VAT seed date.
+
+Why the issued path must not recompute: a VAT rate change after issue would make
+a live recomputation disagree with the frozen document. The snapshot is the
+record; see [INVOICING.md](INVOICING.md#the-snapshot).
 
 ## The transaction model
 

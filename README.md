@@ -4,10 +4,11 @@ An open-source **proof-of-concept invoice generator for the UK market**: draft a
 invoice, let the server compute the VAT, issue it against a gapless number, and
 keep the issued document immutable forever after.
 
-> **Status: Phase 2 complete — the backend is feature-complete.** The full
-> invoice lifecycle works end to end over the API. The frontend is a Vite/React
-> **scaffold only**; building it is Phase 3, and PDF generation is Phase 4. See
-> the [phase plan](docs/PHASE-PLAN.md).
+> **Status: Phase 3 complete — the backend is feature-complete and there is a
+> working React UI.** The full invoice lifecycle works end to end over the API
+> and through the browser: create a client, build a draft with live
+> server-computed totals, issue it, and see it locked. PDF generation is Phase 4.
+> See the [phase plan](docs/PHASE-PLAN.md).
 
 ## What works today
 
@@ -28,6 +29,10 @@ keep the issued document immutable forever after.
 - **Immutability in three layers** — the schema stores no computed money to go
   stale, the service returns 409 on any non-draft mutation, and PostgreSQL
   triggers reject the write even if something bypasses the API entirely.
+- **A React UI** — clients, company profile, an invoice list, and a draft editor
+  with **live totals**: as you edit lines the editor asks the server to compute
+  them (debounced), so the browser never does money arithmetic. Issue from a
+  confirmation dialog; issued invoices render read-only from the snapshot.
 
 Out of scope for the PoC, deliberately: multi-tenancy, HMRC / Making Tax
 Digital, e-invoicing, multi-currency, credit notes, and real authentication.
@@ -47,6 +52,8 @@ for, what was built, what review changed.
 - [`prompts/PROMPT-01.md`](prompts/PROMPT-01.md) — scaffold & CI → PR #1
 - [`prompts/PROMPT-02.md`](prompts/PROMPT-02.md) — domain, money/VAT/numbering core → PR #2
 - [`prompts/PROMPT-03.md`](prompts/PROMPT-03.md) — the API → PR #3
+- [`prompts/PROMPT-04A.md`](prompts/PROMPT-04A.md) — full documentation pass → PR #4
+- [`prompts/PROMPT-04.md`](prompts/PROMPT-04.md) — the React frontend (plus a `/totals` fix and `preview-totals`) → PR #5
 
 Review changed real things. The float ban gained a third enforcement layer after
 a reviewer showed the model boundary silently accepted `unit_price=0.1`, and the
@@ -61,7 +68,7 @@ bug.
 ## Stack
 
 - **Backend:** Python 3.12+ · FastAPI · SQLAlchemy 2 · Alembic · Pydantic v2
-- **Frontend:** React 18 · Vite · TypeScript (strict) · Tailwind CSS v4 *(scaffold)*
+- **Frontend:** React 18 · Vite · TypeScript (strict) · Tailwind CSS v4 · React Router · TanStack Query · Vitest + Testing Library + MSW
 - **Database:** PostgreSQL 17
 - **CI:** GitHub Actions (Dockerized `postgres:17` service container; CI is authoritative)
 
@@ -131,7 +138,7 @@ That is a safety rule: the fixture drops every table it manages, so it must
 never be able to fall back to your real `DATABASE_URL`. Details in
 [TESTING.md](docs/TESTING.md).
 
-### 5. Frontend (scaffold)
+### 5. Frontend
 
 ```bash
 cd frontend
@@ -139,8 +146,20 @@ npm install
 npm run dev
 ```
 
-This currently serves a placeholder page at http://localhost:5173. The UI is
-Phase 3.
+The UI is served at http://localhost:5173, with `/api` proxied to the backend on
+`localhost:8000` (see `vite.config.ts`) — so run the backend from step 3
+alongside it. From there you can fill in the company profile under **Settings**,
+add a **client**, build a **draft invoice** with live totals, and issue it; an
+issued invoice renders read-only from its snapshot.
+
+Frontend checks mirror CI:
+
+```bash
+npm run lint         # eslint
+npx tsc --noEmit     # type-check
+npm run test         # vitest (money formatting + editor behaviour)
+npm run build
+```
 
 ## A 60-second API tour
 
@@ -217,6 +236,11 @@ curl -s $A/invoices/1/totals
 VAT is computed once per rate group, on the group's net — never per line. Why
 that distinction matters, with arithmetic: [MONEY.md](docs/MONEY.md).
 
+`GET /invoices/{id}/totals` computes live for a **draft**; for an **issued** or
+**void** invoice it returns the snapshot's totals verbatim, never recomputed. The
+UI editor works on **unsaved** edits, so it posts lines to the stateless
+`POST /invoices/preview-totals` instead — same engine, nothing persisted.
+
 **5. Issue it:**
 
 ```bash
@@ -291,6 +315,7 @@ pytest
 cd frontend
 npm run lint
 npx tsc --noEmit
+npm run test
 npm run build
 ```
 
