@@ -7,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_session
+from app.core.errors import VALIDATION_FAILED, AppError
+from app.core.vat import LineInput, compute_totals
 from app.modules.invoices import service
 from app.modules.invoices.models import Invoice, InvoiceStatus
 from app.modules.invoices.schemas import (
@@ -15,7 +17,9 @@ from app.modules.invoices.schemas import (
     InvoiceTotalsRead,
     InvoiceUpdate,
     IssueRequest,
+    PreviewTotalsRequest,
 )
+from app.modules.vat.repository import rates_on
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -58,9 +62,50 @@ def delete_invoice(invoice_id: int, session: Session = Depends(get_session)) -> 
 def get_invoice_totals(
     invoice_id: int, session: Session = Depends(get_session)
 ) -> InvoiceTotalsRead:
-    """Compute a draft's totals on demand (rates as of today). Persists nothing."""
+    """Totals for an invoice. Persists nothing.
+
+    Behaviour depends on status, and the difference matters:
+
+    * **draft** — computed on demand from the current lines at today's rates.
+    * **issued / void** — read back from the snapshot written at issue, verbatim.
+      Never recomputed: the money on an issued document is fixed, so a VAT rate
+      change afterwards must not alter what this returns. This is the same
+      source ``GET /invoices/{id}`` serves.
+    """
     invoice = service.get_invoice_or_404(session, invoice_id)
+    if invoice.status != InvoiceStatus.draft:
+        return InvoiceTotalsRead.model_validate(service.totals_from_snapshot(invoice))
     totals = service.compute_invoice_totals(session, invoice, date.today())
+    return InvoiceTotalsRead.model_validate(totals, from_attributes=True)
+
+
+@router.post("/preview-totals", response_model=InvoiceTotalsRead)
+def preview_totals(
+    payload: PreviewTotalsRequest, session: Session = Depends(get_session)
+) -> InvoiceTotalsRead:
+    """Compute totals for a set of lines without touching the database.
+
+    Stateless: nothing is created, updated, or read except the VAT rates. The
+    draft editor calls this for live totals on **unsaved** edits, so the server
+    stays the only thing that does money arithmetic without every keystroke
+    having to autosave a draft.
+    """
+    try:
+        rates = rates_on(session, payload.on_date or date.today())
+    except LookupError as exc:
+        raise AppError(422, VALIDATION_FAILED, str(exc)) from exc
+
+    totals = compute_totals(
+        [
+            LineInput(
+                quantity=line.quantity,
+                unit_price=line.unit_price,
+                vat_rate_code=line.vat_rate_code,
+            )
+            for line in payload.lines
+        ],
+        rates,
+    )
     return InvoiceTotalsRead.model_validate(totals, from_attributes=True)
 
 
